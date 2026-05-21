@@ -1,0 +1,12 @@
+{
+  "name": "imagerail",
+  "version": "0.1.0",
+  "description": "ImageRail / 画轨 - 图片版本管理桌面应用 MVP",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^30.5.1"
+  }
+}
