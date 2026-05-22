@@ -2,37 +2,12 @@
   "name": "imagerail",
   "version": "0.1.0",
   "description": "ImageRail / 画轨 - 图片版本管理桌面应用 MVP",
-  "main": "src/main.js",
   "scripts": {
-    "start": "electron .",
-    "pack": "electron-builder --dir",
-    "dist": "electron-builder --win"
-  },
-  "build": {
-    "appId": "com.starfishc.imagerail",
-    "productName": "ImageRail",
-    "directories": {
-      "output": "dist"
-    },
-    "files": [
-      "src/**/*",
-      "package.json"
-    ],
-    "win": {
-      "target": [
-        "nsis",
-        "portable"
-      ]
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
-    }
+    "start": "tauri dev",
+    "tauri": "tauri",
+    "dist": "tauri build"
   },
   "devDependencies": {
-    "electron": "^30.5.1",
-    "electron-builder": "^24.13.3"
+    "@tauri-apps/cli": "^2.0.0"
   }
 }

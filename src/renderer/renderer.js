@@ -10,7 +10,8 @@ const state = {
   project: null,
   selectedImageId: '',
   pinnedCompareImageId: '',
-  renameResolver: null
+  renameResolver: null,
+  fileDropHoverTrackId: ''
 };
 
 const elements = {
@@ -50,7 +51,9 @@ function makeId(prefix) {
 function fileUrlFromRelativePath(relativePath) {
   if (!state.projectPath || !relativePath) return '';
   const normalizedProjectPath = state.projectPath.replace(/\\/g, '/');
-  return encodeURI(`file:///${normalizedProjectPath}/${relativePath}`);
+  const fullPath = `${normalizedProjectPath}/${relativePath}`;
+  if (window.imageRail?.fileUrlFromPath) return window.imageRail.fileUrlFromPath(fullPath);
+  return encodeURI(`file:///${fullPath}`);
 }
 
 function setProject(projectPath, project) {
@@ -112,7 +115,10 @@ function createProjectListItem(project) {
   openButton.className = 'project-open-button';
   openButton.addEventListener('click', async () => {
     try {
-      const result = await window.imageRail.openExistingProject(project.projectPath);
+      const result = await window.imageRail.openExistingProject({
+        projectPath: project.projectPath,
+        projectDataFile: project.projectDataFile
+      });
       setProject(result.projectPath, result.project);
       closeProjectModal();
     } catch (error) {
@@ -121,13 +127,13 @@ function createProjectListItem(project) {
   });
 
   const title = document.createElement('strong');
-  title.textContent = project.projectName || getFolderName(project.projectPath);
+  title.textContent = `${project.projectName || getFolderName(project.projectPath)}：${project.imagesFolderName || 'images'}`;
 
   const meta = document.createElement('span');
-  meta.textContent = `${project.trackCount} 条轨道 · ${project.imageCount} 张图片 · 图片文件夹 ${project.imagesFolderName}`;
+  meta.textContent = `${project.trackCount} 条轨道 · ${project.imageCount} 张图片`;
 
   const pathText = document.createElement('small');
-  pathText.textContent = project.projectPath;
+  pathText.textContent = joinDisplayPath(project.projectPath, project.imagesFolderName || 'images');
 
   openButton.append(title, meta, pathText);
 
@@ -165,7 +171,10 @@ async function createProjectFromFolder() {
 }
 
 async function getProjectForListAction(project) {
-  const result = await window.imageRail.openExistingProject(project.projectPath);
+  const result = await window.imageRail.openExistingProject({
+    projectPath: project.projectPath,
+    projectDataFile: project.projectDataFile
+  });
   return result.project;
 }
 
@@ -239,7 +248,10 @@ async function deleteProjectFromList(project) {
   if (!confirmed) return;
 
   try {
-    await window.imageRail.deleteProjectRecord(project.projectPath);
+    await window.imageRail.deleteProjectRecord({
+      projectPath: project.projectPath,
+      projectDataFile: project.projectDataFile
+    });
 
     if (state.projectPath === project.projectPath) {
       state.projectPath = '';
@@ -327,6 +339,7 @@ function createTrackElement(track, trackIndex) {
 
   lane.addEventListener('drop', async (event) => {
     event.preventDefault();
+    event.stopPropagation();
     lane.classList.remove('drag-over');
     await handleDrop(event, track.id);
   });
@@ -408,16 +421,7 @@ function createImageCard(trackId, image) {
     removeImageRecord(trackId, image.id);
   });
 
-  const renamePrefixButton = document.createElement('button');
-  renamePrefixButton.type = 'button';
-  renamePrefixButton.className = 'delete-button neutral-button';
-  renamePrefixButton.textContent = '重命名前缀';
-  renamePrefixButton.addEventListener('click', (event) => {
-    event.stopPropagation();
-    renameTrackPrefix(trackId);
-  });
-
-  actions.append(renamePrefixButton, deleteButton);
+  actions.append(deleteButton);
   body.append(fileName, version, note, status, actions);
   card.append(thumbButton, body);
   card.addEventListener('click', () => {
@@ -445,23 +449,178 @@ async function handleDrop(event, trackId) {
   if (!state.projectPath || !state.project) return;
 
   const files = Array.from(event.dataTransfer.files || []);
-  if (files.length === 0) return;
+  let importedCount = 0;
 
   for (const file of files) {
     try {
-      const result = await window.imageRail.addImageToTrack({
-        projectPath: state.projectPath,
-        project: state.project,
-        trackId,
-        sourcePath: file.path
-      });
+      const result = file.path
+        ? await window.imageRail.addImageToTrack({
+            projectPath: state.projectPath,
+            project: state.project,
+            trackId,
+            sourcePath: file.path
+          })
+        : await window.imageRail.addImageFileDataToTrack({
+            projectPath: state.projectPath,
+            project: state.project,
+            trackId,
+            fileName: file.name,
+            mimeType: file.type,
+            fileData: await file.arrayBuffer()
+          });
+
       state.project = result.project;
+      importedCount += 1;
     } catch (error) {
       alert(error.message || '导入图片失败');
     }
   }
 
+  if (importedCount === 0 && files.length === 0) {
+    const items = Array.from(event.dataTransfer.items || []);
+    const fileItems = items.filter((item) => item.kind === 'file');
+
+    for (const item of fileItems) {
+      const file = item.getAsFile();
+      if (!file) continue;
+
+      try {
+        const result = await window.imageRail.addImageFileDataToTrack({
+          projectPath: state.projectPath,
+          project: state.project,
+          trackId,
+          fileName: file.name,
+          mimeType: file.type,
+          fileData: await file.arrayBuffer()
+        });
+
+        state.project = result.project;
+        importedCount += 1;
+      } catch (error) {
+        alert(error.message || '导入图片失败');
+      }
+    }
+  }
+
+  if (importedCount === 0) {
+    const imageUrl = getDraggedImageUrl(event.dataTransfer);
+
+    if (imageUrl) {
+      try {
+        const result = await window.imageRail.addImageUrlToTrack({
+          projectPath: state.projectPath,
+          project: state.project,
+          trackId,
+          url: imageUrl
+        });
+        state.project = result.project;
+        importedCount += 1;
+      } catch (error) {
+        alert(error.message || '从网页导入图片失败');
+      }
+    }
+  }
+
+  if (importedCount === 0) {
+    alert('没有识别到可导入的图片。请拖入 png、jpg、jpeg、webp、gif、bmp 或 avif 图片。');
+  }
+
   render();
+}
+
+async function importImagePaths(trackId, sourcePaths) {
+  if (!state.projectPath || !state.project || !sourcePaths.length) return;
+
+  try {
+    const result = await window.imageRail.addImagePathsToTrack({
+      projectPath: state.projectPath,
+      project: state.project,
+      trackId,
+      sourcePaths
+    });
+    state.project = result.project;
+    render();
+  } catch (error) {
+    alert(error.message || '导入图片失败');
+  }
+}
+
+function setTrackDragOver(trackId) {
+  document.querySelectorAll('.track-lane.drag-over').forEach((lane) => {
+    if (lane.dataset.trackId !== trackId) lane.classList.remove('drag-over');
+  });
+
+  const lane = trackId ? document.querySelector(`.track-lane[data-track-id="${CSS.escape(trackId)}"]`) : null;
+  if (lane) lane.classList.add('drag-over');
+  state.fileDropHoverTrackId = trackId || '';
+}
+
+function getTrackIdFromDropPosition(position) {
+  if (!position) return '';
+
+  const candidates = [
+    [position.x, position.y],
+    [position.x / window.devicePixelRatio, position.y / window.devicePixelRatio]
+  ];
+
+  for (const [x, y] of candidates) {
+    const element = document.elementFromPoint(x, y);
+    const lane = element?.closest?.('.track-lane');
+    if (lane?.dataset.trackId) return lane.dataset.trackId;
+  }
+
+  return '';
+}
+
+function setupTauriFileDropHandling() {
+  if (!window.imageRail?.onFileDropEvent) return;
+
+  Promise.resolve(window.imageRail.onFileDropEvent(async (event) => {
+    const payload = event?.payload || {};
+    const eventType = payload.type || '';
+
+    if (eventType === 'enter' || eventType === 'over') {
+      setTrackDragOver(getTrackIdFromDropPosition(payload.position));
+      return;
+    }
+
+    if (eventType === 'leave') {
+      setTrackDragOver('');
+      return;
+    }
+
+    if (eventType !== 'drop') return;
+
+    const sourcePaths = Array.isArray(payload.paths) ? payload.paths : [];
+    const trackId = getTrackIdFromDropPosition(payload.position) || state.fileDropHoverTrackId;
+    setTrackDragOver('');
+
+    if (!sourcePaths.length) return;
+
+    if (!trackId) {
+      alert('请把图片拖到某一条轨道的右侧区域内。');
+      return;
+    }
+
+    await importImagePaths(trackId, sourcePaths);
+  })).catch((error) => {
+    console.warn('Tauri file drop is not available.', error);
+  });
+}
+
+function getDraggedImageUrl(dataTransfer) {
+  const uriList = dataTransfer.getData('text/uri-list');
+  const plainText = dataTransfer.getData('text/plain');
+  const html = dataTransfer.getData('text/html');
+  const directUrl = [uriList, plainText]
+    .flatMap((text) => String(text || '').split(/\r?\n/))
+    .map((line) => line.trim())
+    .find((line) => /^https?:\/\//i.test(line));
+
+  if (directUrl) return directUrl;
+
+  const match = String(html || '').match(/<img[^>]+src=["']([^"']+)["']/i);
+  return match ? match[1] : '';
 }
 
 function createTrack() {
@@ -519,7 +678,7 @@ async function renameTrackPrefix(trackId) {
   const currentPrefix = track.prefix || track.letter || 'image';
   const newPrefix = await askRenameValue({
     title: '重命名图片前缀',
-    description: '同一条轨道里的图片文件名会一起修改，例如 hero_1.0.png、hero_1.1.png。',
+    description: '同一条轨道里的图片文件名会一起修改，例如 hero_1.png、hero_2.png。',
     value: currentPrefix
   });
   if (newPrefix === null) return;
@@ -685,7 +844,15 @@ function renderComparePanel() {
 
 function createComparePane(label, item) {
   const pane = document.createElement('section');
-  pane.className = 'compare-pane';
+  pane.className = `compare-pane ${label === '固定图' ? 'compare-pane-pinned' : 'compare-pane-current'}`;
+
+  const archiveTag = document.createElement('div');
+  archiveTag.className = 'compare-archive-tag';
+  archiveTag.textContent = `${label} / ${item.track.name}`;
+
+  const sideMarker = document.createElement('div');
+  sideMarker.className = 'compare-side-marker';
+  sideMarker.innerHTML = `<strong>${label === '固定图' ? '01' : '02'}</strong><span>${escapeHtml(label)}</span>`;
 
   const imageButton = document.createElement('button');
   imageButton.type = 'button';
@@ -701,11 +868,18 @@ function createComparePane(label, item) {
   caption.className = 'compare-caption';
   const statusLabel = STATUS_OPTIONS.find((option) => option.value === item.image.status)?.label || '待定';
   caption.innerHTML = `
-    <strong>${escapeHtml(label)} · ${escapeHtml(item.image.fileName)}</strong>
-    <span>${escapeHtml(item.track.name)} · 版本 ${escapeHtml(item.image.version)} · ${escapeHtml(statusLabel)}</span>
+    <div class="compare-info-card compare-info-card-small">
+      <strong>状态</strong>
+      <span>${escapeHtml(statusLabel)}</span>
+    </div>
+    <div class="compare-info-card">
+      <strong>文件</strong>
+      <span>${escapeHtml(item.image.fileName)}</span>
+      <em>${escapeHtml(item.track.name)} / 版本 ${escapeHtml(item.image.version)}</em>
+    </div>
   `;
 
-  pane.append(imageButton, caption);
+  pane.append(archiveTag, sideMarker, imageButton, caption);
   return pane;
 }
 
@@ -754,6 +928,13 @@ function getFolderName(folderPath) {
     .pop() || 'image';
 }
 
+function joinDisplayPath(...parts) {
+  return parts
+    .filter(Boolean)
+    .join('\\')
+    .replace(/\\+/g, '\\');
+}
+
 function cleanFilePrefix(value) {
   return String(value || '')
     .trim()
@@ -793,4 +974,5 @@ window.addEventListener('keydown', (event) => {
   }
 });
 
+setupTauriFileDropHandling();
 render();

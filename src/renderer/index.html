@@ -31,7 +31,10 @@
 
         <aside class="compare-panel">
           <div class="compare-header">
-            <h2>预览</h2>
+            <div>
+              <span>预览 / 对比</span>
+              <h2>图片查看</h2>
+            </div>
             <button id="pinCompareButton" type="button" disabled>固定对比</button>
           </div>
           <div id="compareContent" class="compare-empty">选择一张图片后，这里会显示大图。固定一张图后，再选择另一张图即可上下对比。</div>
@@ -72,6 +75,7 @@
       </section>
     </div>
 
+    <script src="./tauri-api.js"></script>
     <script src="./renderer.js"></script>
   </body>
 </html>

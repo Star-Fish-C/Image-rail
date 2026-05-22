@@ -1,0 +1,15 @@
+[package]
+name = "imagerail"
+version = "0.1.0"
+description = "ImageRail / 画轨"
+authors = ["Star-Fish-C"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+serde_json = "1"
+rfd = "0.14"
+ureq = "2"

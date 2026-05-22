@@ -1,5 +1,7 @@
 node_modules/
 project-data/
 dist/
+src-tauri/target/
+src-tauri/gen/schemas/
 *.log
 npm-debug.log*
