@@ -14,8 +14,7 @@
           <p id="projectPathText">尚未选择项目文件夹</p>
         </div>
         <div class="toolbar">
-          <button id="chooseProjectButton" type="button">选择项目文件夹</button>
-          <button id="renameProjectButton" type="button" disabled>重命名图片文件夹</button>
+          <button id="chooseProjectButton" type="button">选择项目</button>
           <button id="newTrackButton" type="button" disabled>新建轨道</button>
           <button id="saveProjectButton" type="button" disabled>保存项目</button>
         </div>
@@ -24,15 +23,18 @@
       <main class="workspace">
         <section class="rail-board">
           <div class="empty-state" id="emptyState">
-            <h2>先选择一个项目文件夹</h2>
-            <p>应用会在该文件夹内创建 images 图片文件夹；你也可以之后把 images 重命名为分镜头、角色图等。</p>
+            <h2>先选择或创建一个项目</h2>
+            <p>点击顶部“选择项目”，从已创建项目中打开，或选择一个文件夹创建新项目。</p>
           </div>
           <div class="tracks" id="tracks"></div>
         </section>
 
-        <aside class="detail-panel">
-          <h2>详情</h2>
-          <div id="detailContent" class="detail-empty">选择一张图片后，这里会显示文件名、版本、备注和状态。</div>
+        <aside class="compare-panel">
+          <div class="compare-header">
+            <h2>预览</h2>
+            <button id="pinCompareButton" type="button" disabled>固定对比</button>
+          </div>
+          <div id="compareContent" class="compare-empty">选择一张图片后，这里会显示大图。固定一张图后，再选择另一张图即可上下对比。</div>
         </aside>
       </main>
     </div>
@@ -52,6 +54,22 @@
           <button id="confirmRenameButton" type="submit">确认</button>
         </div>
       </form>
+    </div>
+
+    <div class="project-modal" id="projectModal" hidden>
+      <section class="project-dialog">
+        <div class="project-dialog-header">
+          <div>
+            <h2>选择项目</h2>
+            <p>打开已创建项目，或选择一个文件夹创建新项目。</p>
+          </div>
+          <button id="closeProjectModalButton" type="button">关闭</button>
+        </div>
+        <div id="projectList" class="project-list"></div>
+        <div class="project-dialog-actions">
+          <button id="createProjectButton" type="button">选择文件夹创建项目</button>
+        </div>
+      </section>
     </div>
 
     <script src="./renderer.js"></script>

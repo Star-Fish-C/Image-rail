@@ -9,18 +9,19 @@ const state = {
   projectPath: '',
   project: null,
   selectedImageId: '',
+  pinnedCompareImageId: '',
   renameResolver: null
 };
 
 const elements = {
   projectPathText: document.querySelector('#projectPathText'),
   chooseProjectButton: document.querySelector('#chooseProjectButton'),
-  renameProjectButton: document.querySelector('#renameProjectButton'),
   newTrackButton: document.querySelector('#newTrackButton'),
   saveProjectButton: document.querySelector('#saveProjectButton'),
   emptyState: document.querySelector('#emptyState'),
   tracks: document.querySelector('#tracks'),
-  detailContent: document.querySelector('#detailContent'),
+  compareContent: document.querySelector('#compareContent'),
+  pinCompareButton: document.querySelector('#pinCompareButton'),
   previewModal: document.querySelector('#previewModal'),
   previewImage: document.querySelector('#previewImage'),
   closePreviewButton: document.querySelector('#closePreviewButton'),
@@ -29,7 +30,11 @@ const elements = {
   renameTitle: document.querySelector('#renameTitle'),
   renameDescription: document.querySelector('#renameDescription'),
   renameInput: document.querySelector('#renameInput'),
-  cancelRenameButton: document.querySelector('#cancelRenameButton')
+  cancelRenameButton: document.querySelector('#cancelRenameButton'),
+  projectModal: document.querySelector('#projectModal'),
+  projectList: document.querySelector('#projectList'),
+  createProjectButton: document.querySelector('#createProjectButton'),
+  closeProjectModalButton: document.querySelector('#closeProjectModalButton')
 };
 
 function getTrackLetter(index) {
@@ -54,7 +59,200 @@ function setProject(projectPath, project) {
   state.project.projectName = state.project.projectName || getFolderName(projectPath);
   state.project.imagesFolderName = state.project.imagesFolderName || 'images';
   state.selectedImageId = '';
+  state.pinnedCompareImageId = '';
   render();
+}
+
+function setProjectFromResult(result) {
+  state.projectPath = result.projectPath || state.projectPath;
+  state.project = result.project;
+  render();
+}
+
+async function openProjectModal() {
+  elements.projectModal.hidden = false;
+  await renderProjectList();
+}
+
+function closeProjectModal() {
+  elements.projectModal.hidden = true;
+}
+
+async function renderProjectList() {
+  elements.projectList.innerHTML = '';
+
+  try {
+    const projects = await window.imageRail.listProjects();
+
+    if (projects.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'project-list-empty';
+      empty.textContent = '还没有已创建项目。请点击下方按钮选择文件夹创建项目。';
+      elements.projectList.appendChild(empty);
+      return;
+    }
+
+    projects.forEach((project) => {
+      elements.projectList.appendChild(createProjectListItem(project));
+    });
+  } catch (error) {
+    const empty = document.createElement('div');
+    empty.className = 'project-list-empty';
+    empty.textContent = error.message || '读取项目列表失败';
+    elements.projectList.appendChild(empty);
+  }
+}
+
+function createProjectListItem(project) {
+  const item = document.createElement('div');
+  item.className = 'project-list-item';
+
+  const openButton = document.createElement('button');
+  openButton.type = 'button';
+  openButton.className = 'project-open-button';
+  openButton.addEventListener('click', async () => {
+    try {
+      const result = await window.imageRail.openExistingProject(project.projectPath);
+      setProject(result.projectPath, result.project);
+      closeProjectModal();
+    } catch (error) {
+      alert(error.message || '打开项目失败');
+    }
+  });
+
+  const title = document.createElement('strong');
+  title.textContent = project.projectName || getFolderName(project.projectPath);
+
+  const meta = document.createElement('span');
+  meta.textContent = `${project.trackCount} 条轨道 · ${project.imageCount} 张图片 · 图片文件夹 ${project.imagesFolderName}`;
+
+  const pathText = document.createElement('small');
+  pathText.textContent = project.projectPath;
+
+  openButton.append(title, meta, pathText);
+
+  const actions = document.createElement('div');
+  actions.className = 'project-item-actions';
+
+  const renameProjectButton = createProjectActionButton('重命名项目', () => renameProjectFromList(project));
+  const renameImagesFolderButton = createProjectActionButton('重命名图片文件夹', () => renameImagesFolderFromList(project));
+  const deleteProjectButton = createProjectActionButton('删除项目', () => deleteProjectFromList(project), 'danger-button');
+
+  actions.append(renameProjectButton, renameImagesFolderButton, deleteProjectButton);
+  item.append(openButton, actions);
+  return item;
+}
+
+function createProjectActionButton(label, onClick, extraClass = '') {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = `project-action-button ${extraClass}`.trim();
+  button.textContent = label;
+  button.addEventListener('click', (event) => {
+    event.stopPropagation();
+    onClick();
+  });
+  return button;
+}
+
+async function createProjectFromFolder() {
+  const result = await window.imageRail.chooseProjectFolder();
+
+  if (result) {
+    setProject(result.projectPath, result.project);
+    closeProjectModal();
+  }
+}
+
+async function getProjectForListAction(project) {
+  const result = await window.imageRail.openExistingProject(project.projectPath);
+  return result.project;
+}
+
+async function renameProjectFromList(project) {
+  const currentName = project.projectName || getFolderName(project.projectPath);
+  const newName = await askRenameValue({
+    title: '重命名项目',
+    description: '只修改 ImageRail 里的项目显示名称，不会修改硬盘上的项目文件夹。',
+    value: currentName
+  });
+  if (newName === null) return;
+
+  const cleanName = newName.trim();
+  if (!cleanName) {
+    alert('项目名称不能为空');
+    return;
+  }
+
+  try {
+    const fullProject = await getProjectForListAction(project);
+    const result = await window.imageRail.renameProject({
+      projectPath: project.projectPath,
+      project: fullProject,
+      newProjectName: cleanName
+    });
+
+    if (state.projectPath === project.projectPath) {
+      setProjectFromResult(result);
+    }
+
+    await renderProjectList();
+  } catch (error) {
+    alert(error.message || '重命名项目失败');
+  }
+}
+
+async function renameImagesFolderFromList(project) {
+  const newName = await askRenameValue({
+    title: '重命名图片文件夹',
+    description: `会重命名项目文件夹里的图片总文件夹。例如把 ${project.imagesFolderName || 'images'} 改成 分镜头。`,
+    value: project.imagesFolderName || 'images'
+  });
+  if (newName === null) return;
+
+  const cleanName = cleanFilePrefix(newName);
+  if (!cleanName) {
+    alert('图片文件夹名称不能为空');
+    return;
+  }
+
+  try {
+    const fullProject = await getProjectForListAction(project);
+    const result = await window.imageRail.renameImagesFolder({
+      projectPath: project.projectPath,
+      project: fullProject,
+      newFolderName: cleanName
+    });
+
+    if (state.projectPath === project.projectPath) {
+      setProjectFromResult(result);
+    }
+
+    await renderProjectList();
+  } catch (error) {
+    alert(getRenameErrorMessage(error, '重命名图片文件夹失败'));
+  }
+}
+
+async function deleteProjectFromList(project) {
+  const confirmed = confirm(`确定从 ImageRail 中删除“${project.projectName || getFolderName(project.projectPath)}”吗？\n\n这只会删除项目记录，不会删除硬盘上的文件夹和图片。`);
+  if (!confirmed) return;
+
+  try {
+    await window.imageRail.deleteProjectRecord(project.projectPath);
+
+    if (state.projectPath === project.projectPath) {
+      state.projectPath = '';
+      state.project = null;
+      state.selectedImageId = '';
+      state.pinnedCompareImageId = '';
+      render();
+    }
+
+    await renderProjectList();
+  } catch (error) {
+    alert(error.message || '删除项目记录失败');
+  }
 }
 
 function render() {
@@ -62,14 +260,15 @@ function render() {
   elements.projectPathText.textContent = hasProject
     ? `${state.project.projectName || getFolderName(state.projectPath)} · 图片文件夹：${state.project.imagesFolderName || 'images'} · ${state.projectPath}`
     : '尚未选择项目文件夹';
-  elements.renameProjectButton.disabled = !hasProject;
   elements.newTrackButton.disabled = !hasProject;
   elements.saveProjectButton.disabled = !hasProject;
+  elements.pinCompareButton.disabled = !hasProject || !state.selectedImageId;
+  elements.pinCompareButton.textContent = state.pinnedCompareImageId ? '取消固定' : '固定对比';
   elements.emptyState.hidden = hasProject && state.project.tracks.length > 0;
   elements.tracks.innerHTML = '';
 
   if (!hasProject) {
-    renderDetail();
+    renderComparePanel();
     return;
   }
 
@@ -77,7 +276,7 @@ function render() {
     elements.tracks.appendChild(createTrackElement(track, trackIndex));
   });
 
-  renderDetail();
+  renderComparePanel();
 }
 
 function createTrackElement(track, trackIndex) {
@@ -156,8 +355,7 @@ function createImageCard(trackId, image) {
   thumbButton.className = 'thumb-button';
   thumbButton.addEventListener('click', (event) => {
     event.stopPropagation();
-    state.selectedImageId = image.id;
-    openPreview(image);
+    selectImage(image.id);
     render();
   });
 
@@ -224,11 +422,15 @@ function createImageCard(trackId, image) {
   card.append(thumbButton, body);
   card.addEventListener('click', () => {
     if (state.selectedImageId === image.id) return;
-    state.selectedImageId = image.id;
+    selectImage(image.id);
     render();
   });
 
   return card;
+}
+
+function findTrack(trackId) {
+  return state.project?.tracks.find((item) => item.id === trackId) || null;
 }
 
 function stopCardClick(element) {
@@ -280,38 +482,8 @@ function createTrack() {
   render();
 }
 
-async function renameProject() {
-  if (!state.project) return;
-
-  const currentName = state.project.projectName || getFolderName(state.projectPath);
-  const newName = await askRenameValue({
-    title: '重命名图片文件夹',
-    description: `会重命名当前项目文件夹里的图片总文件夹。例如把 ${state.project.imagesFolderName || 'images'} 改成 分镜头。不会修改外层项目文件夹。`,
-    value: state.project.imagesFolderName || 'images'
-  });
-  if (newName === null) return;
-
-  const cleanName = cleanFilePrefix(newName);
-  if (!cleanName) {
-    alert('图片文件夹名称不能为空');
-    return;
-  }
-
-  try {
-    const result = await window.imageRail.renameImagesFolder({
-      projectPath: state.projectPath,
-      project: state.project,
-      newFolderName: cleanName
-    });
-    state.project = result.project;
-    render();
-  } catch (error) {
-    alert(getRenameErrorMessage(error, '重命名图片文件夹失败'));
-  }
-}
-
 async function renameTrack(trackId) {
-  const track = state.project?.tracks.find((item) => item.id === trackId);
+  const track = findTrack(trackId);
   if (!track) return;
 
   const newName = await askRenameValue({
@@ -334,15 +506,14 @@ async function renameTrack(trackId) {
       trackId,
       newTrackName: cleanName
     });
-    state.project = result.project;
-    render();
+    setProjectFromResult(result);
   } catch (error) {
     alert(getRenameErrorMessage(error, '重命名轨道文件夹失败'));
   }
 }
 
 async function renameTrackPrefix(trackId) {
-  const track = state.project?.tracks.find((item) => item.id === trackId);
+  const track = findTrack(trackId);
   if (!track) return;
 
   const currentPrefix = track.prefix || track.letter || 'image';
@@ -366,8 +537,7 @@ async function renameTrackPrefix(trackId) {
       trackId,
       newPrefix: cleanPrefix
     });
-    state.project = result.project;
-    render();
+    setProjectFromResult(result);
   } catch (error) {
     alert(getRenameErrorMessage(error, '重命名图片失败'));
   }
@@ -403,7 +573,7 @@ function closeRenameModal(value) {
 }
 
 function updateImage(trackId, imageId, patch) {
-  const track = state.project.tracks.find((item) => item.id === trackId);
+  const track = findTrack(trackId);
   if (!track) return;
 
   const image = track.images.find((item) => item.id === imageId);
@@ -411,21 +581,22 @@ function updateImage(trackId, imageId, patch) {
 
   Object.assign(image, patch);
   saveProject({ silent: true });
-  renderDetail();
+  renderComparePanel();
 }
 
 function removeImageRecord(trackId, imageId) {
-  const track = state.project.tracks.find((item) => item.id === trackId);
+  const track = findTrack(trackId);
   if (!track) return;
 
   track.images = track.images.filter((image) => image.id !== imageId);
   if (state.selectedImageId === imageId) state.selectedImageId = '';
+  if (state.pinnedCompareImageId === imageId) state.pinnedCompareImageId = '';
   saveProject();
   render();
 }
 
 function removeTrackRecord(trackId) {
-  const track = state.project?.tracks.find((item) => item.id === trackId);
+  const track = findTrack(trackId);
   if (!track) return;
 
   const confirmed = confirm(`确定删除“${track.name}”这条轨道吗？\n\n这只会删除应用里的轨道记录，不会删除硬盘里的轨道文件夹和图片。`);
@@ -436,6 +607,10 @@ function removeTrackRecord(trackId) {
 
   if (removedImageIds.has(state.selectedImageId)) {
     state.selectedImageId = '';
+  }
+
+  if (removedImageIds.has(state.pinnedCompareImageId)) {
+    state.pinnedCompareImageId = '';
   }
 
   saveProject();
@@ -458,50 +633,80 @@ async function saveProject(options = {}) {
 }
 
 function findSelectedImage() {
-  if (!state.project || !state.selectedImageId) return null;
+  return findImageById(state.selectedImageId);
+}
+
+function findImageById(imageId) {
+  if (!state.project || !imageId) return null;
 
   for (const track of state.project.tracks) {
-    const image = track.images.find((item) => item.id === state.selectedImageId);
+    const image = track.images.find((item) => item.id === imageId);
     if (image) return { track, image };
   }
 
   return null;
 }
 
-function renderDetail() {
+function selectImage(imageId) {
+  state.selectedImageId = imageId;
+}
+
+function togglePinnedCompareImage() {
+  if (!state.selectedImageId) return;
+
+  state.pinnedCompareImageId = state.pinnedCompareImageId ? '' : state.selectedImageId;
+  render();
+}
+
+function renderComparePanel() {
   const selected = findSelectedImage();
+  const pinned = findImageById(state.pinnedCompareImageId);
+
+  elements.compareContent.innerHTML = '';
+
   if (!selected) {
-    elements.detailContent.className = 'detail-empty';
-    elements.detailContent.textContent = state.projectPath
-      ? '点击任意图片卡片后，这里会显示详细信息。'
-      : '选择一张图片后，这里会显示文件名、版本、备注和状态。';
+    elements.compareContent.className = 'compare-empty';
+    elements.compareContent.textContent = state.projectPath
+      ? '点击任意图片卡片后，这里会显示大图。'
+      : '选择项目文件夹并点击图片后，这里会显示大图。';
     return;
   }
 
-  const statusLabel = STATUS_OPTIONS.find((option) => option.value === selected.image.status)?.label || '待定';
-  elements.detailContent.className = '';
-  elements.detailContent.innerHTML = '';
+  elements.compareContent.className = pinned ? 'compare-stack' : 'compare-single';
 
-  const preview = document.createElement('img');
-  preview.className = 'detail-preview';
-  preview.src = fileUrlFromRelativePath(selected.image.relativePath);
-  preview.alt = selected.image.fileName;
+  if (pinned) {
+    elements.compareContent.appendChild(createComparePane('固定图', pinned));
+    elements.compareContent.appendChild(createComparePane('当前图', selected));
+    return;
+  }
 
-  const fields = [
-    ['轨道', selected.track.name],
-    ['文件名', selected.image.fileName],
-    ['版本号', selected.image.version],
-    ['状态', statusLabel],
-    ['备注', selected.image.note || '暂无备注']
-  ];
+  elements.compareContent.appendChild(createComparePane('当前图', selected));
+}
 
-  elements.detailContent.appendChild(preview);
-  fields.forEach(([label, value]) => {
-    const field = document.createElement('div');
-    field.className = 'detail-field';
-    field.innerHTML = `<strong>${escapeHtml(label)}</strong>${escapeHtml(value)}`;
-    elements.detailContent.appendChild(field);
-  });
+function createComparePane(label, item) {
+  const pane = document.createElement('section');
+  pane.className = 'compare-pane';
+
+  const imageButton = document.createElement('button');
+  imageButton.type = 'button';
+  imageButton.className = 'compare-image-button';
+  imageButton.addEventListener('click', () => openPreview(item.image));
+
+  const image = document.createElement('img');
+  image.src = fileUrlFromRelativePath(item.image.relativePath);
+  image.alt = item.image.fileName;
+  imageButton.appendChild(image);
+
+  const caption = document.createElement('div');
+  caption.className = 'compare-caption';
+  const statusLabel = STATUS_OPTIONS.find((option) => option.value === item.image.status)?.label || '待定';
+  caption.innerHTML = `
+    <strong>${escapeHtml(label)} · ${escapeHtml(item.image.fileName)}</strong>
+    <span>${escapeHtml(item.track.name)} · 版本 ${escapeHtml(item.image.version)} · ${escapeHtml(statusLabel)}</span>
+  `;
+
+  pane.append(imageButton, caption);
+  return pane;
 }
 
 function openPreview(image) {
@@ -557,16 +762,15 @@ function cleanFilePrefix(value) {
     .slice(0, 60);
 }
 
-elements.chooseProjectButton.addEventListener('click', async () => {
-  const result = await window.imageRail.chooseProjectFolder();
-  if (result) {
-    setProject(result.projectPath, result.project);
-  }
+elements.chooseProjectButton.addEventListener('click', openProjectModal);
+elements.createProjectButton.addEventListener('click', createProjectFromFolder);
+elements.closeProjectModalButton.addEventListener('click', closeProjectModal);
+elements.projectModal.addEventListener('click', (event) => {
+  if (event.target === elements.projectModal) closeProjectModal();
 });
-
-elements.renameProjectButton.addEventListener('click', renameProject);
 elements.newTrackButton.addEventListener('click', createTrack);
 elements.saveProjectButton.addEventListener('click', () => saveProject());
+elements.pinCompareButton.addEventListener('click', togglePinnedCompareImage);
 elements.closePreviewButton.addEventListener('click', closePreview);
 elements.previewModal.addEventListener('click', (event) => {
   if (event.target === elements.previewModal) closePreview();
@@ -582,6 +786,10 @@ elements.renameModal.addEventListener('click', (event) => {
 window.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && !elements.renameModal.hidden) {
     closeRenameModal(null);
+  }
+
+  if (event.key === 'Escape' && !elements.projectModal.hidden) {
+    closeProjectModal();
   }
 });
 

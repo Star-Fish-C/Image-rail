@@ -1,8 +1,10 @@
-const { app, BrowserWindow, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs/promises');
 const crypto = require('crypto');
 
+const DEFAULT_IMAGES_FOLDER = 'images';
+const DEFAULT_APP_NAME = 'ImageRail';
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp']);
 
 let mainWindow;
@@ -24,7 +26,72 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 }
 
-app.whenReady().then(createWindow);
+function createApplicationMenu() {
+  const template = [
+    {
+      label: '文件',
+      submenu: [
+        { label: '退出', role: 'quit' }
+      ]
+    },
+    {
+      label: '编辑',
+      submenu: [
+        { label: '撤销', role: 'undo' },
+        { label: '重做', role: 'redo' },
+        { type: 'separator' },
+        { label: '剪切', role: 'cut' },
+        { label: '复制', role: 'copy' },
+        { label: '粘贴', role: 'paste' },
+        { label: '全选', role: 'selectAll' }
+      ]
+    },
+    {
+      label: '视图',
+      submenu: [
+        { label: '重新加载', role: 'reload' },
+        { label: '强制重新加载', role: 'forceReload' },
+        { label: '开发者工具', role: 'toggleDevTools' },
+        { type: 'separator' },
+        { label: '放大', role: 'zoomIn' },
+        { label: '缩小', role: 'zoomOut' },
+        { label: '重置缩放', role: 'resetZoom' },
+        { type: 'separator' },
+        { label: '全屏', role: 'togglefullscreen' }
+      ]
+    },
+    {
+      label: '窗口',
+      submenu: [
+        { label: '最小化', role: 'minimize' },
+        { label: '关闭窗口', role: 'close' }
+      ]
+    },
+    {
+      label: '帮助',
+      submenu: [
+        {
+          label: '关于 ImageRail',
+          click: () => {
+            dialog.showMessageBox(mainWindow, {
+              type: 'info',
+              title: '关于 ImageRail',
+              message: 'ImageRail / 画轨',
+              detail: '图片版本管理工具'
+            });
+          }
+        }
+      ]
+    }
+  ];
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+app.whenReady().then(() => {
+  createApplicationMenu();
+  createWindow();
+});
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
@@ -58,9 +125,9 @@ function getLegacyProjectJsonPath(projectPath) {
 
 function createEmptyProject() {
   return {
-    appName: 'ImageRail',
+    appName: DEFAULT_APP_NAME,
     projectName: '',
-    imagesFolderName: 'images',
+    imagesFolderName: DEFAULT_IMAGES_FOLDER,
     version: 1,
     updatedAt: new Date().toISOString(),
     tracks: []
@@ -69,6 +136,53 @@ function createEmptyProject() {
 
 async function ensureDir(dirPath) {
   await fs.mkdir(dirPath, { recursive: true });
+}
+
+function normalizePathForCompare(filePath) {
+  return path.resolve(filePath).toLowerCase();
+}
+
+async function readSavedProjectRecords() {
+  try {
+    const entries = await fs.readdir(getProjectDataDir(), { withFileTypes: true });
+    const records = [];
+
+    for (const entry of entries) {
+      if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== '.json') continue;
+
+      try {
+        const raw = await fs.readFile(path.join(getProjectDataDir(), entry.name), 'utf8');
+        const project = normalizeProject(JSON.parse(raw));
+        const projectPath = project.projectFolderPath;
+
+        if (projectPath) {
+          records.push({ projectPath, project });
+        }
+      } catch {
+        // Ignore old or broken project data files so one bad file does not block folder selection.
+      }
+    }
+
+    return records;
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+async function listProjectSummaries() {
+  const records = await readSavedProjectRecords();
+
+  records.sort((a, b) => new Date(b.project.updatedAt || 0) - new Date(a.project.updatedAt || 0));
+
+  return records.map(({ projectPath, project }) => ({
+    projectPath,
+    projectName: project.projectName || path.basename(projectPath),
+    imagesFolderName: project.imagesFolderName || DEFAULT_IMAGES_FOLDER,
+    trackCount: project.tracks.length,
+    imageCount: project.tracks.reduce((total, track) => total + track.images.length, 0),
+    updatedAt: project.updatedAt || ''
+  }));
 }
 
 async function readProject(projectPath) {
@@ -100,21 +214,28 @@ async function readProject(projectPath) {
 
 function normalizeProject(project) {
   return {
-    appName: project.appName || 'ImageRail',
+    appName: project.appName || DEFAULT_APP_NAME,
     projectName: project.projectName || '',
-    imagesFolderName: project.imagesFolderName || 'images',
+    imagesFolderName: project.imagesFolderName || DEFAULT_IMAGES_FOLDER,
     version: project.version || 1,
+    projectFolderPath: project.projectFolderPath || '',
     updatedAt: project.updatedAt || new Date().toISOString(),
     tracks: Array.isArray(project.tracks)
-      ? project.tracks.map((track, index) => ({
-          ...track,
-          letter: track.letter || getTrackLetter(index),
-          prefix: track.prefix || track.letter || getTrackLetter(index),
-          folderName: track.folderName || `track_${track.letter || getTrackLetter(index)}`,
-          name: track.name || `轨道 ${track.letter || getTrackLetter(index)}`,
-          images: Array.isArray(track.images) ? track.images : []
-        }))
+      ? project.tracks.map((track, index) => normalizeTrack(track, index))
       : []
+  };
+}
+
+function normalizeTrack(track, index) {
+  const letter = track.letter || getTrackLetter(index);
+
+  return {
+    ...track,
+    letter,
+    prefix: track.prefix || letter,
+    folderName: track.folderName || `track_${letter}`,
+    name: track.name || `轨道 ${letter}`,
+    images: Array.isArray(track.images) ? track.images : []
   };
 }
 
@@ -155,8 +276,19 @@ function getTrackFolderName(track, trackIndex) {
   return track.folderName || `track_${track.letter || getTrackLetter(trackIndex)}`;
 }
 
-function getImagesFolderName(project) {
-  return normalizeProject(project).imagesFolderName || 'images';
+function getProjectImagesDir(projectPath, project) {
+  return path.join(projectPath, project.imagesFolderName || DEFAULT_IMAGES_FOLDER);
+}
+
+function getTrackDir(projectPath, project, track, trackIndex) {
+  return path.join(getProjectImagesDir(projectPath, project), getTrackFolderName(track, trackIndex));
+}
+
+function updateImageFolderInRelativePath(relativePath, imagesFolderName, fallbackFileName) {
+  const normalizedRelativePath = String(relativePath || '').replace(/\\/g, '/');
+  const pathParts = normalizedRelativePath.split('/').filter(Boolean);
+  const restParts = pathParts.length > 1 ? pathParts.slice(1) : [fallbackFileName];
+  return path.posix.join(imagesFolderName, ...restParts);
 }
 
 async function findNextImageName(trackDir, track, trackPrefix, extension) {
@@ -236,7 +368,7 @@ async function renameTrackFolder(projectPath, project, trackId, newTrackName) {
   const cleanName = String(newTrackName || '').trim();
   const cleanFolderName = sanitizeFolderName(cleanName);
   const oldFolderName = getTrackFolderName(track, trackIndex);
-  const imagesDir = path.join(projectPath, workingProject.imagesFolderName);
+  const imagesDir = getProjectImagesDir(projectPath, workingProject);
   const oldFolderPath = path.join(imagesDir, oldFolderName);
   const newFolderPath = path.join(imagesDir, cleanFolderName);
 
@@ -269,7 +401,7 @@ async function renameTrackFolder(projectPath, project, trackId, newTrackName) {
 async function renameImagesFolder(projectPath, project, newFolderName) {
   const workingProject = normalizeProject(project);
   const cleanFolderName = sanitizeFolderName(newFolderName);
-  const oldFolderName = workingProject.imagesFolderName || 'images';
+  const oldFolderName = workingProject.imagesFolderName || DEFAULT_IMAGES_FOLDER;
   const oldFolderPath = path.join(projectPath, oldFolderName);
   const newFolderPath = path.join(projectPath, cleanFolderName);
 
@@ -288,20 +420,36 @@ async function renameImagesFolder(projectPath, project, newFolderName) {
   workingProject.imagesFolderName = cleanFolderName;
   workingProject.tracks = workingProject.tracks.map((track) => ({
     ...track,
-    images: track.images.map((image) => {
-      const normalizedRelativePath = image.relativePath.replace(/\\/g, '/');
-      const pathParts = normalizedRelativePath.split('/');
-      const restParts = pathParts.length > 1 ? pathParts.slice(1) : [image.fileName];
-
-      return {
-        ...image,
-        relativePath: path.posix.join(cleanFolderName, ...restParts)
-      };
-    })
+    images: track.images.map((image) => ({
+      ...image,
+      relativePath: updateImageFolderInRelativePath(image.relativePath, cleanFolderName, image.fileName)
+    }))
   }));
 
   const savedProject = await saveProject(projectPath, workingProject);
   return savedProject;
+}
+
+async function renameProject(projectPath, project, newProjectName) {
+  const cleanName = String(newProjectName || '').trim();
+  if (!cleanName) {
+    throw new Error('Project name cannot be empty');
+  }
+
+  const workingProject = {
+    ...normalizeProject(project),
+    projectName: cleanName
+  };
+
+  return saveProject(projectPath, workingProject);
+}
+
+async function deleteProjectRecord(projectPath) {
+  const projectJsonPath = getProjectJsonPath(projectPath);
+
+  if (await fileExists(projectJsonPath)) {
+    await fs.unlink(projectJsonPath);
+  }
 }
 
 async function fileExists(filePath) {
@@ -315,7 +463,9 @@ async function fileExists(filePath) {
 
 ipcMain.handle('project:choose-folder', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: '选择 ImageRail 项目文件夹',
+    title: '选择文件夹创建 ImageRail 项目',
+    buttonLabel: '创建项目',
+    message: '请选择一个外层文件夹。ImageRail 会在这个文件夹里创建图片总文件夹。',
     properties: ['openDirectory', 'createDirectory']
   });
 
@@ -325,12 +475,17 @@ ipcMain.handle('project:choose-folder', async () => {
 
   const projectPath = result.filePaths[0];
   const project = await readProject(projectPath);
-  await ensureDir(path.join(projectPath, project.imagesFolderName || 'images'));
+  await ensureDir(getProjectImagesDir(projectPath, project));
   return { projectPath, project };
 });
 
-ipcMain.handle('project:load', async (_event, projectPath) => {
+ipcMain.handle('project:list', async () => {
+  return listProjectSummaries();
+});
+
+ipcMain.handle('project:open-existing', async (_event, projectPath) => {
   const project = await readProject(projectPath);
+  await ensureDir(getProjectImagesDir(projectPath, project));
   return { projectPath, project };
 });
 
@@ -349,6 +504,16 @@ ipcMain.handle('project:rename-images-folder', async (_event, { projectPath, pro
   return { projectPath, project: savedProject };
 });
 
+ipcMain.handle('project:rename', async (_event, { projectPath, project, newProjectName }) => {
+  const savedProject = await renameProject(projectPath, project, newProjectName);
+  return { projectPath, project: savedProject };
+});
+
+ipcMain.handle('project:delete-record', async (_event, projectPath) => {
+  await deleteProjectRecord(projectPath);
+  return { projectPath };
+});
+
 ipcMain.handle('image:add-to-track', async (_event, { projectPath, project, trackId, sourcePath }) => {
   const extension = path.extname(sourcePath).toLowerCase();
   if (!IMAGE_EXTENSIONS.has(extension)) {
@@ -364,7 +529,7 @@ ipcMain.handle('image:add-to-track', async (_event, { projectPath, project, trac
   const track = workingProject.tracks[trackIndex];
   const trackLetter = track.letter || getTrackLetter(trackIndex);
   const trackPrefix = sanitizeImagePrefix(track.prefix || trackLetter);
-  const trackDir = path.join(projectPath, workingProject.imagesFolderName, getTrackFolderName(track, trackIndex));
+  const trackDir = getTrackDir(projectPath, workingProject, track, trackIndex);
   await ensureDir(trackDir);
 
   const { version, destinationPath } = await findNextImageName(trackDir, track, trackPrefix, extension);
