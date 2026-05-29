@@ -1,10 +1,13 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use serde_json::{json, Value};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::ipc::{InvokeBody, Request};
 
-const DEFAULT_IMAGES_FOLDER: &str = "images";
+const DEFAULT_IMAGES_FOLDER: &str = "";
 const DEFAULT_APP_NAME: &str = "ImageRail";
 const IMAGE_EXTENSIONS: [&str; 7] = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".avif"];
 
@@ -17,15 +20,20 @@ fn main() {
             list_projects,
             open_existing_project,
             save_project_command,
-            rename_images_folder_command,
             rename_project_command,
             delete_project_record_command,
+            delete_image_file_command,
+            delete_track_folder_command,
             rename_track_folder_command,
             add_image_to_track_command,
-            add_image_paths_to_track_command,
             add_image_file_data_to_track_command,
+            add_image_raw_file_data_to_track_command,
             add_image_url_to_track_command,
-            rename_track_prefix_command
+            rename_track_prefix_command,
+            start_window_drag_command,
+            minimize_window_command,
+            toggle_maximize_window_command,
+            close_window_command
         ])
         .run(tauri::generate_context!())
         .expect("error while running ImageRail");
@@ -252,7 +260,12 @@ fn get_project_data_path(project: &Value) -> AppResult<PathBuf> {
 }
 
 fn project_images_dir(project_path: &str, project: &Value) -> PathBuf {
-    Path::new(project_path).join(string_field(project, "imagesFolderName"))
+    let folder_name = string_field(project, "imagesFolderName");
+    if folder_name.is_empty() {
+        Path::new(project_path).to_path_buf()
+    } else {
+        Path::new(project_path).join(folder_name)
+    }
 }
 
 fn track_folder_name(track: &Value, index: usize) -> String {
@@ -330,6 +343,19 @@ fn read_saved_project_records() -> AppResult<Vec<(String, Value)>> {
     Ok(records)
 }
 
+fn read_project_from_data_file(project_data_file: &str) -> AppResult<Value> {
+    let safe_name = Path::new(project_data_file)
+        .file_name()
+        .and_then(|item| item.to_str())
+        .ok_or_else(|| "Project data file name is invalid".to_string())?;
+    let raw = fs::read_to_string(project_data_dir()?.join(safe_name))
+        .map_err(|error| error.to_string())?;
+    let mut project =
+        normalize_project(serde_json::from_str(&raw).map_err(|error| error.to_string())?);
+    set_field(&mut project, "projectDataFile", json!(safe_name));
+    Ok(project)
+}
+
 fn image_extension_from_name(file_name: &str) -> String {
     Path::new(file_name)
         .extension()
@@ -357,6 +383,41 @@ fn image_extension_from_url(url: &str) -> String {
     image_extension_from_name(clean_url)
 }
 
+fn header_value(request: &Request<'_>, name: &str) -> AppResult<String> {
+    request
+        .headers()
+        .get(name)
+        .ok_or_else(|| format!("Missing header: {}", name))?
+        .to_str()
+        .map(|value| value.to_string())
+        .map_err(|error| error.to_string())
+}
+
+fn percent_decode(value: &str) -> AppResult<String> {
+    let mut bytes = Vec::with_capacity(value.len());
+    let mut index = 0;
+    let raw = value.as_bytes();
+
+    while index < raw.len() {
+        if raw[index] == b'%' {
+            if index + 2 >= raw.len() {
+                return Err("Invalid encoded text".to_string());
+            }
+
+            let hex = std::str::from_utf8(&raw[index + 1..index + 3])
+                .map_err(|error| error.to_string())?;
+            let decoded = u8::from_str_radix(hex, 16).map_err(|error| error.to_string())?;
+            bytes.push(decoded);
+            index += 3;
+        } else {
+            bytes.push(raw[index]);
+            index += 1;
+        }
+    }
+
+    String::from_utf8(bytes).map_err(|error| error.to_string())
+}
+
 fn assert_image_extension(extension: &str) -> AppResult<()> {
     if IMAGE_EXTENSIONS.contains(&extension) {
         Ok(())
@@ -376,7 +437,7 @@ fn find_next_image_name(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let mut index = images.len();
+    let mut index = 0;
 
     loop {
         let version = get_image_version(index);
@@ -517,15 +578,7 @@ fn list_projects() -> AppResult<Vec<Value>> {
 
 #[tauri::command]
 fn open_existing_project(project_path: String, project_data_file: String) -> AppResult<Value> {
-    let safe_name = Path::new(&project_data_file)
-        .file_name()
-        .and_then(|item| item.to_str())
-        .ok_or_else(|| "项目数据文件名不正确".to_string())?;
-    let raw = fs::read_to_string(project_data_dir()?.join(safe_name))
-        .map_err(|error| error.to_string())?;
-    let mut project =
-        normalize_project(serde_json::from_str(&raw).map_err(|error| error.to_string())?);
-    set_field(&mut project, "projectDataFile", json!(safe_name));
+    let project = read_project_from_data_file(&project_data_file)?;
     ensure_dir(&project_images_dir(&project_path, &project))?;
     Ok(json!({ "projectPath": project_path, "project": project }))
 }
@@ -548,62 +601,6 @@ fn rename_project_command(
     }
     let mut working_project = normalize_project(project);
     set_field(&mut working_project, "projectName", json!(clean_name));
-    let saved_project = save_project(&project_path, working_project)?;
-    Ok(json!({ "projectPath": project_path, "project": saved_project }))
-}
-
-#[tauri::command]
-fn rename_images_folder_command(
-    project_path: String,
-    project: Value,
-    new_folder_name: String,
-) -> AppResult<Value> {
-    let mut working_project = normalize_project(project);
-    let clean_folder_name = sanitize_folder_name(&new_folder_name);
-    let old_folder_name = string_field(&working_project, "imagesFolderName")
-        .if_empty(DEFAULT_IMAGES_FOLDER.to_string());
-    let old_folder_path = Path::new(&project_path).join(&old_folder_name);
-    let new_folder_path = Path::new(&project_path).join(&clean_folder_name);
-
-    if old_folder_path != new_folder_path && new_folder_path.exists() {
-        return Err(format!("Already exists: {}", clean_folder_name));
-    }
-    if old_folder_path.exists() && old_folder_path != new_folder_path {
-        fs::rename(&old_folder_path, &new_folder_path).map_err(|error| error.to_string())?;
-    } else {
-        ensure_dir(&new_folder_path)?;
-    }
-
-    set_field(
-        &mut working_project,
-        "imagesFolderName",
-        json!(clean_folder_name.clone()),
-    );
-    if let Some(tracks) = working_project
-        .get_mut("tracks")
-        .and_then(Value::as_array_mut)
-    {
-        for track in tracks {
-            if let Some(images) = track.get_mut("images").and_then(Value::as_array_mut) {
-                for image in images {
-                    let file_name = string_field(image, "fileName");
-                    let old_relative = string_field(image, "relativePath").replace('\\', "/");
-                    let parts: Vec<&str> = old_relative
-                        .split('/')
-                        .filter(|part| !part.is_empty())
-                        .collect();
-                    let mut rest = if parts.len() > 1 {
-                        parts[1..].to_vec()
-                    } else {
-                        vec![file_name.as_str()]
-                    };
-                    rest.insert(0, &clean_folder_name);
-                    set_field(image, "relativePath", json!(rest.join("/")));
-                }
-            }
-        }
-    }
-
     let saved_project = save_project(&project_path, working_project)?;
     Ok(json!({ "projectPath": project_path, "project": saved_project }))
 }
@@ -656,16 +653,13 @@ fn rename_track_folder_command(
     set_field(track, "folderName", json!(clean_folder_name.clone()));
     if let Some(images) = track.get_mut("images").and_then(Value::as_array_mut) {
         for image in images {
-            set_field(
-                image,
-                "relativePath",
-                json!(format!(
-                    "{}/{}/{}",
-                    images_folder_name,
-                    clean_folder_name,
-                    string_field(image, "fileName")
-                )),
-            );
+            let file_path = format!("{}/{}", clean_folder_name, string_field(image, "fileName"));
+            let relative = if images_folder_name.is_empty() {
+                file_path
+            } else {
+                format!("{}/{}", images_folder_name, file_path)
+            };
+            set_field(image, "relativePath", json!(relative));
         }
     }
 
@@ -685,6 +679,133 @@ fn delete_project_record_command(project_data_file: String) -> AppResult<Value> 
         }
     }
     Ok(json!({}))
+}
+
+fn project_scoped_file_path(project_path: &str, relative_path: &str) -> AppResult<PathBuf> {
+    let project_root = Path::new(project_path)
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let relative = Path::new(relative_path);
+
+    if relative.is_absolute() {
+        return Err("图片路径不能指向项目文件夹外部".to_string());
+    }
+
+    let image_path = project_root.join(relative);
+    if image_path.exists() {
+        let canonical_image_path = image_path
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        if !canonical_image_path.starts_with(&project_root) {
+            return Err("为了避免误删，不能删除项目文件夹外部的图片".to_string());
+        }
+        return Ok(canonical_image_path);
+    }
+
+    Ok(image_path)
+}
+
+#[tauri::command]
+fn delete_track_folder_command(
+    project_path: String,
+    project: Value,
+    track_id: String,
+) -> AppResult<Value> {
+    let mut working_project = normalize_project(project);
+    let project_root = Path::new(&project_path)
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let images_dir = project_images_dir(&project_path, &working_project);
+    let tracks = working_project
+        .get_mut("tracks")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "项目轨道数据不正确".to_string())?;
+    let track_index = tracks
+        .iter()
+        .position(|track| string_field(track, "id") == track_id)
+        .ok_or_else(|| "没有找到目标轨道".to_string())?;
+    let folder_name = track_folder_name(&tracks[track_index], track_index);
+    let track_dir = images_dir.join(folder_name);
+
+    if track_dir.exists() {
+        let canonical_track_dir = track_dir
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        if !canonical_track_dir.starts_with(&project_root) || canonical_track_dir == project_root {
+            return Err("为了避免误删，不能删除项目文件夹本身或项目外部文件夹".to_string());
+        }
+        if !canonical_track_dir.is_dir() {
+            return Err("轨道路径不是文件夹，已停止删除".to_string());
+        }
+        fs::remove_dir_all(&canonical_track_dir).map_err(|error| error.to_string())?;
+    }
+
+    tracks.remove(track_index);
+    let saved_project = save_project(&project_path, working_project)?;
+    Ok(json!({ "projectPath": project_path, "project": saved_project }))
+}
+
+#[tauri::command]
+fn delete_image_file_command(
+    project_path: String,
+    project: Value,
+    track_id: String,
+    image_id: String,
+) -> AppResult<Value> {
+    let mut working_project = normalize_project(project);
+    let tracks = working_project
+        .get_mut("tracks")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "项目轨道数据不正确".to_string())?;
+    let track = tracks
+        .iter_mut()
+        .find(|track| string_field(track, "id") == track_id)
+        .ok_or_else(|| "没有找到目标轨道".to_string())?;
+    let images = track
+        .get_mut("images")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "轨道图片数据不正确".to_string())?;
+    let image_index = images
+        .iter()
+        .position(|image| string_field(image, "id") == image_id)
+        .ok_or_else(|| "没有找到目标图片".to_string())?;
+    let image = images[image_index].clone();
+    let relative_path = string_field(&image, "relativePath");
+
+    if !relative_path.is_empty() {
+        let image_path = project_scoped_file_path(&project_path, &relative_path)?;
+        if image_path.exists() {
+            fs::remove_file(&image_path).map_err(|error| error.to_string())?;
+        }
+    }
+
+    images.remove(image_index);
+    let saved_project = save_project(&project_path, working_project)?;
+    Ok(json!({ "projectPath": project_path, "project": saved_project }))
+}
+
+#[tauri::command]
+fn start_window_drag_command(window: tauri::Window) -> AppResult<()> {
+    window.start_dragging().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn minimize_window_command(window: tauri::Window) -> AppResult<()> {
+    window.minimize().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn toggle_maximize_window_command(window: tauri::Window) -> AppResult<()> {
+    if window.is_maximized().map_err(|error| error.to_string())? {
+        window.unmaximize().map_err(|error| error.to_string())
+    } else {
+        window.maximize().map_err(|error| error.to_string())
+    }
+}
+
+#[tauri::command]
+fn close_window_command(window: tauri::Window) -> AppResult<()> {
+    window.close().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -709,71 +830,6 @@ fn add_image_to_track_command(
 }
 
 #[tauri::command]
-fn add_image_paths_to_track_command(
-    project_path: String,
-    project: Value,
-    track_id: String,
-    source_paths: Vec<String>,
-) -> AppResult<Value> {
-    let mut working_project = normalize_project(project);
-    let images_dir = project_images_dir(&project_path, &working_project);
-    let tracks = working_project
-        .get_mut("tracks")
-        .and_then(Value::as_array_mut)
-        .ok_or_else(|| "Project track data is invalid".to_string())?;
-
-    let track_index = tracks
-        .iter()
-        .position(|track| string_field(track, "id") == track_id)
-        .ok_or_else(|| "Track not found".to_string())?;
-
-    let track = &mut tracks[track_index];
-    let track_prefix = sanitize_image_prefix(
-        &string_field(track, "prefix").if_empty(get_track_letter(track_index)),
-    );
-    let track_dir = images_dir.join(track_folder_name(track, track_index));
-    ensure_dir(&track_dir)?;
-
-    for source_path in &source_paths {
-        let extension = image_extension_from_name(source_path);
-        assert_image_extension(&extension)?;
-    }
-
-    let mut imported_images = Vec::new();
-
-    for source_path in source_paths {
-        let extension = image_extension_from_name(&source_path);
-
-        let (version, file_name, destination) =
-            find_next_image_name(&track_dir, track, &track_prefix, &extension)?;
-
-        fs::copy(&source_path, &destination)
-            .map(|_| ())
-            .map_err(|error| error.to_string())?;
-
-        let image_record = json!({
-            "id": format!("img_{}_{}", now_millis(), imported_images.len()),
-            "fileName": file_name,
-            "version": version,
-            "relativePath": relative_path(&project_path, &destination),
-            "note": "",
-            "status": "pending",
-            "createdAt": now_iso_like()
-        });
-
-        track
-            .get_mut("images")
-            .and_then(Value::as_array_mut)
-            .ok_or_else(|| "Track image data is invalid".to_string())?
-            .push(image_record.clone());
-        imported_images.push(image_record);
-    }
-
-    let saved_project = save_project(&project_path, working_project)?;
-    Ok(json!({ "projectPath": project_path, "project": saved_project, "images": imported_images }))
-}
-
-#[tauri::command]
 fn add_image_file_data_to_track_command(
     project_path: String,
     project: Value,
@@ -784,6 +840,30 @@ fn add_image_file_data_to_track_command(
 ) -> AppResult<Value> {
     let extension =
         image_extension_from_name(&file_name).if_empty(image_extension_from_mime(&mime_type));
+    add_image_with_writer(
+        &project_path,
+        project,
+        &track_id,
+        &extension,
+        |destination| fs::write(destination, &file_data).map_err(|error| error.to_string()),
+    )
+}
+
+#[tauri::command]
+fn add_image_raw_file_data_to_track_command(request: Request<'_>) -> AppResult<Value> {
+    let project_path = percent_decode(&header_value(&request, "x-project-path")?)?;
+    let project_data_file = percent_decode(&header_value(&request, "x-project-data-file")?)?;
+    let track_id = percent_decode(&header_value(&request, "x-track-id")?)?;
+    let file_name = percent_decode(&header_value(&request, "x-file-name")?)?;
+    let mime_type = header_value(&request, "x-mime-type").unwrap_or_default();
+    let project = read_project_from_data_file(&project_data_file)?;
+    let extension =
+        image_extension_from_name(&file_name).if_empty(image_extension_from_mime(&mime_type));
+    let file_data = match request.body() {
+        InvokeBody::Raw(bytes) => bytes.clone(),
+        InvokeBody::Json(_) => return Err("Image data must be sent as raw bytes".to_string()),
+    };
+
     add_image_with_writer(
         &project_path,
         project,

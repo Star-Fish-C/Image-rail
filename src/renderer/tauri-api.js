@@ -25,11 +25,6 @@
       projectPath: payload.projectPath,
       project: payload.project
     }),
-    renameImagesFolder: (payload) => invoke('rename_images_folder_command', {
-      projectPath: payload.projectPath,
-      project: payload.project,
-      newFolderName: payload.newFolderName
-    }),
     renameProject: (payload) => invoke('rename_project_command', {
       projectPath: payload.projectPath,
       project: payload.project,
@@ -37,6 +32,17 @@
     }),
     deleteProjectRecord: (payload) => invoke('delete_project_record_command', {
       projectDataFile: payload.projectDataFile
+    }),
+    deleteImageFile: (payload) => invoke('delete_image_file_command', {
+      projectPath: payload.projectPath,
+      project: payload.project,
+      trackId: payload.trackId,
+      imageId: payload.imageId
+    }),
+    deleteTrackFolder: (payload) => invoke('delete_track_folder_command', {
+      projectPath: payload.projectPath,
+      project: payload.project,
+      trackId: payload.trackId
     }),
     renameTrackFolder: (payload) => invoke('rename_track_folder_command', {
       projectPath: payload.projectPath,
@@ -50,12 +56,6 @@
       trackId: payload.trackId,
       sourcePath: payload.sourcePath
     }),
-    addImagePathsToTrack: (payload) => invoke('add_image_paths_to_track_command', {
-      projectPath: payload.projectPath,
-      project: payload.project,
-      trackId: payload.trackId,
-      sourcePaths: payload.sourcePaths
-    }),
     addImageFileDataToTrack: (payload) => invoke('add_image_file_data_to_track_command', {
       projectPath: payload.projectPath,
       project: payload.project,
@@ -64,6 +64,19 @@
       mimeType: payload.mimeType,
       fileData: Array.from(new Uint8Array(payload.fileData))
     }),
+    addImageRawFileDataToTrack: (payload) => invoke(
+      'add_image_raw_file_data_to_track_command',
+      new Uint8Array(payload.fileData),
+      {
+        headers: {
+          'x-project-path': encodeURIComponent(payload.projectPath || ''),
+          'x-project-data-file': encodeURIComponent(payload.project.projectDataFile || ''),
+          'x-track-id': encodeURIComponent(payload.trackId || ''),
+          'x-file-name': encodeURIComponent(payload.fileName || ''),
+          'x-mime-type': payload.mimeType || ''
+        }
+      }
+    ),
     addImageUrlToTrack: (payload) => invoke('add_image_url_to_track_command', {
       projectPath: payload.projectPath,
       project: payload.project,
@@ -76,10 +89,9 @@
       trackId: payload.trackId,
       newPrefix: payload.newPrefix
     }),
-    onFileDropEvent: (handler) => {
-      const getCurrentWebview = tauri?.webview?.getCurrentWebview;
-      const webview = getCurrentWebview?.();
-      return webview?.onDragDropEvent?.(handler);
-    }
+    startWindowDrag: () => invoke('start_window_drag_command'),
+    minimizeWindow: () => invoke('minimize_window_command'),
+    toggleMaximizeWindow: () => invoke('toggle_maximize_window_command'),
+    closeWindow: () => invoke('close_window_command')
   };
 })();

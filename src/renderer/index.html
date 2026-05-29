@@ -8,8 +8,9 @@
   </head>
   <body>
     <div class="app-shell">
-      <header class="topbar">
-        <div>
+      <div class="window-drag-strip" data-tauri-drag-region></div>
+      <header class="topbar" data-tauri-drag-region>
+        <div class="title-area" data-tauri-drag-region>
           <h1>ImageRail / 画轨</h1>
           <p id="projectPathText">尚未选择项目文件夹</p>
         </div>
@@ -17,6 +18,11 @@
           <button id="chooseProjectButton" type="button">选择项目</button>
           <button id="newTrackButton" type="button" disabled>新建轨道</button>
           <button id="saveProjectButton" type="button" disabled>保存项目</button>
+        </div>
+        <div class="window-controls">
+          <button id="minimizeWindowButton" type="button" aria-label="最小化">-</button>
+          <button id="maximizeWindowButton" type="button" aria-label="最大化或还原">□</button>
+          <button id="closeWindowButton" type="button" aria-label="关闭">×</button>
         </div>
       </header>
 
@@ -29,13 +35,18 @@
           <div class="tracks" id="tracks"></div>
         </section>
 
+        <div id="compareResizer" class="compare-resizer" aria-label="调整右侧查看区域宽度"></div>
         <aside class="compare-panel">
           <div class="compare-header">
             <div>
               <span>预览 / 对比</span>
               <h2>图片查看</h2>
             </div>
-            <button id="pinCompareButton" type="button" disabled>固定对比</button>
+            <div class="compare-tools">
+              <button id="zoomOutButton" type="button" disabled title="缩小">-</button>
+              <button id="zoomInButton" type="button" disabled title="放大">+</button>
+              <button id="pinCompareButton" type="button" disabled>固定对比</button>
+            </div>
           </div>
           <div id="compareContent" class="compare-empty">选择一张图片后，这里会显示大图。固定一张图后，再选择另一张图即可上下对比。</div>
         </aside>
@@ -72,6 +83,13 @@
         <div class="project-dialog-actions">
           <button id="createProjectButton" type="button">选择文件夹创建项目</button>
         </div>
+      </section>
+    </div>
+
+    <div class="app-message" id="appMessage" hidden>
+      <section class="app-message-dialog">
+        <p id="appMessageText"></p>
+        <button id="appMessageCloseButton" type="button">知道了</button>
       </section>
     </div>
 

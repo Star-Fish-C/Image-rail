@@ -5,13 +5,24 @@ const STATUS_OPTIONS = [
   { value: 'final_candidate', label: '最终候选' }
 ];
 
+const COMPARE_WIDTH_STORAGE_KEY = 'imagerail.comparePanelWidth';
+const COMPARE_MIN_WIDTH = 300;
+const COMPARE_MAX_WIDTH = 780;
+const COMPARE_ZOOM_MIN = 0.5;
+const COMPARE_ZOOM_MAX = 8;
+const COMPARE_ZOOM_STEP = 0.25;
+
 const state = {
   projectPath: '',
   project: null,
   selectedImageId: '',
   pinnedCompareImageId: '',
   renameResolver: null,
-  fileDropHoverTrackId: ''
+  pendingDeleteImageId: '',
+  pendingDeleteTrackId: '',
+  pendingDeleteProjectPath: '',
+  activeCompareViewport: null,
+  comparePanelWidth: Number(localStorage.getItem(COMPARE_WIDTH_STORAGE_KEY)) || 390
 };
 
 const elements = {
@@ -22,7 +33,11 @@ const elements = {
   emptyState: document.querySelector('#emptyState'),
   tracks: document.querySelector('#tracks'),
   compareContent: document.querySelector('#compareContent'),
+  comparePanel: document.querySelector('.compare-panel'),
+  compareResizer: document.querySelector('#compareResizer'),
   pinCompareButton: document.querySelector('#pinCompareButton'),
+  zoomInButton: document.querySelector('#zoomInButton'),
+  zoomOutButton: document.querySelector('#zoomOutButton'),
   previewModal: document.querySelector('#previewModal'),
   previewImage: document.querySelector('#previewImage'),
   closePreviewButton: document.querySelector('#closePreviewButton'),
@@ -35,7 +50,13 @@ const elements = {
   projectModal: document.querySelector('#projectModal'),
   projectList: document.querySelector('#projectList'),
   createProjectButton: document.querySelector('#createProjectButton'),
-  closeProjectModalButton: document.querySelector('#closeProjectModalButton')
+  closeProjectModalButton: document.querySelector('#closeProjectModalButton'),
+  appMessage: document.querySelector('#appMessage'),
+  appMessageText: document.querySelector('#appMessageText'),
+  appMessageCloseButton: document.querySelector('#appMessageCloseButton'),
+  minimizeWindowButton: document.querySelector('#minimizeWindowButton'),
+  maximizeWindowButton: document.querySelector('#maximizeWindowButton'),
+  closeWindowButton: document.querySelector('#closeWindowButton')
 };
 
 function getTrackLetter(index) {
@@ -48,21 +69,86 @@ function makeId(prefix) {
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
 
-function fileUrlFromRelativePath(relativePath) {
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function applyComparePanelWidth() {
+  const width = clamp(state.comparePanelWidth, COMPARE_MIN_WIDTH, COMPARE_MAX_WIDTH);
+  state.comparePanelWidth = width;
+  document.documentElement.style.setProperty('--compare-panel-width', `${width}px`);
+  localStorage.setItem(COMPARE_WIDTH_STORAGE_KEY, String(width));
+}
+
+function getActiveCompareViewport() {
+  if (state.activeCompareViewport?.isConnected) return state.activeCompareViewport;
+  return document.querySelector('.compare-image-button');
+}
+
+function getViewportZoom(viewport) {
+  return Number(viewport?.dataset.zoom) || 1;
+}
+
+function setViewportZoom(viewport, zoom) {
+  if (!viewport) return;
+  const cleanZoom = clamp(zoom, COMPARE_ZOOM_MIN, COMPARE_ZOOM_MAX);
+  viewport.dataset.zoom = String(cleanZoom);
+  viewport.style.setProperty('--compare-zoom', String(cleanZoom));
+  viewport.classList.toggle('zoomed', cleanZoom !== 1);
+  updateCompareZoomButtons();
+}
+
+function activateCompareViewport(viewport) {
+  state.activeCompareViewport = viewport;
+  updateCompareZoomButtons();
+}
+
+function updateCompareZoomButtons() {
+  const viewport = getActiveCompareViewport();
+  const zoom = getViewportZoom(viewport);
+  const disabled = !state.selectedImageId || !viewport;
+  if (elements.zoomInButton) elements.zoomInButton.disabled = disabled || zoom >= COMPARE_ZOOM_MAX;
+  if (elements.zoomOutButton) elements.zoomOutButton.disabled = disabled || zoom <= COMPARE_ZOOM_MIN;
+}
+
+function showAppMessage(message) {
+  elements.appMessageText.textContent = String(message || '操作失败，请稍后再试。');
+  elements.appMessage.hidden = false;
+}
+
+function closeAppMessage() {
+  elements.appMessage.hidden = true;
+  elements.appMessageText.textContent = '';
+}
+
+function getErrorText(error, fallbackMessage) {
+  return String(error?.message || error || fallbackMessage);
+}
+
+function fileUrlFromRelativePath(relativePath, cacheKey = '') {
   if (!state.projectPath || !relativePath) return '';
   const normalizedProjectPath = state.projectPath.replace(/\\/g, '/');
   const fullPath = `${normalizedProjectPath}/${relativePath}`;
-  if (window.imageRail?.fileUrlFromPath) return window.imageRail.fileUrlFromPath(fullPath);
-  return encodeURI(`file:///${fullPath}`);
+  const baseUrl = window.imageRail?.fileUrlFromPath
+    ? window.imageRail.fileUrlFromPath(fullPath)
+    : encodeURI(`file:///${fullPath}`);
+  return cacheKey ? `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}v=${encodeURIComponent(cacheKey)}` : baseUrl;
+}
+
+function imageCacheKey(image) {
+  return [image?.id, image?.createdAt, image?.fileName].filter(Boolean).join('_');
 }
 
 function setProject(projectPath, project) {
   state.projectPath = projectPath;
   state.project = project;
   state.project.projectName = state.project.projectName || getFolderName(projectPath);
-  state.project.imagesFolderName = state.project.imagesFolderName || 'images';
+  state.project.imagesFolderName = state.project.imagesFolderName || '';
   state.selectedImageId = '';
   state.pinnedCompareImageId = '';
+  state.pendingDeleteImageId = '';
+  state.pendingDeleteTrackId = '';
+  state.pendingDeleteProjectPath = '';
   render();
 }
 
@@ -101,7 +187,7 @@ async function renderProjectList() {
   } catch (error) {
     const empty = document.createElement('div');
     empty.className = 'project-list-empty';
-    empty.textContent = error.message || '读取项目列表失败';
+    empty.textContent = getErrorText(error, '读取项目列表失败');
     elements.projectList.appendChild(empty);
   }
 }
@@ -122,18 +208,20 @@ function createProjectListItem(project) {
       setProject(result.projectPath, result.project);
       closeProjectModal();
     } catch (error) {
-      alert(error.message || '打开项目失败');
+      showAppMessage(getErrorText(error, '打开项目失败'));
     }
   });
 
   const title = document.createElement('strong');
-  title.textContent = `${project.projectName || getFolderName(project.projectPath)}：${project.imagesFolderName || 'images'}`;
+  title.textContent = project.projectName || getFolderName(project.projectPath);
 
   const meta = document.createElement('span');
   meta.textContent = `${project.trackCount} 条轨道 · ${project.imageCount} 张图片`;
 
   const pathText = document.createElement('small');
-  pathText.textContent = joinDisplayPath(project.projectPath, project.imagesFolderName || 'images');
+  pathText.textContent = project.imagesFolderName
+    ? joinDisplayPath(project.projectPath, project.imagesFolderName)
+    : project.projectPath;
 
   openButton.append(title, meta, pathText);
 
@@ -141,10 +229,10 @@ function createProjectListItem(project) {
   actions.className = 'project-item-actions';
 
   const renameProjectButton = createProjectActionButton('重命名项目', () => renameProjectFromList(project));
-  const renameImagesFolderButton = createProjectActionButton('重命名图片文件夹', () => renameImagesFolderFromList(project));
-  const deleteProjectButton = createProjectActionButton('删除项目', () => deleteProjectFromList(project), 'danger-button');
+  const deleteProjectButton = createProjectActionButton('删除项目', () => deleteProjectFromList(project, deleteProjectButton), 'danger-button');
+  setInlineConfirmState(deleteProjectButton, state.pendingDeleteProjectPath === project.projectPath);
 
-  actions.append(renameProjectButton, renameImagesFolderButton, deleteProjectButton);
+  actions.append(renameProjectButton, deleteProjectButton);
   item.append(openButton, actions);
   return item;
 }
@@ -189,7 +277,7 @@ async function renameProjectFromList(project) {
 
   const cleanName = newName.trim();
   if (!cleanName) {
-    alert('项目名称不能为空');
+    showAppMessage('项目名称不能为空');
     return;
   }
 
@@ -207,45 +295,15 @@ async function renameProjectFromList(project) {
 
     await renderProjectList();
   } catch (error) {
-    alert(error.message || '重命名项目失败');
+    showAppMessage(getErrorText(error, '重命名项目失败'));
   }
 }
 
-async function renameImagesFolderFromList(project) {
-  const newName = await askRenameValue({
-    title: '重命名图片文件夹',
-    description: `会重命名项目文件夹里的图片总文件夹。例如把 ${project.imagesFolderName || 'images'} 改成 分镜头。`,
-    value: project.imagesFolderName || 'images'
-  });
-  if (newName === null) return;
-
-  const cleanName = cleanFilePrefix(newName);
-  if (!cleanName) {
-    alert('图片文件夹名称不能为空');
+async function deleteProjectFromList(project, button) {
+  if (state.pendingDeleteProjectPath !== project.projectPath) {
+    markInlineDeleteConfirmation(button, 'project', project.projectPath);
     return;
   }
-
-  try {
-    const fullProject = await getProjectForListAction(project);
-    const result = await window.imageRail.renameImagesFolder({
-      projectPath: project.projectPath,
-      project: fullProject,
-      newFolderName: cleanName
-    });
-
-    if (state.projectPath === project.projectPath) {
-      setProjectFromResult(result);
-    }
-
-    await renderProjectList();
-  } catch (error) {
-    alert(getRenameErrorMessage(error, '重命名图片文件夹失败'));
-  }
-}
-
-async function deleteProjectFromList(project) {
-  const confirmed = confirm(`确定从 ImageRail 中删除“${project.projectName || getFolderName(project.projectPath)}”吗？\n\n这只会删除项目记录，不会删除硬盘上的文件夹和图片。`);
-  if (!confirmed) return;
 
   try {
     await window.imageRail.deleteProjectRecord({
@@ -261,20 +319,24 @@ async function deleteProjectFromList(project) {
       render();
     }
 
+    state.pendingDeleteProjectPath = '';
     await renderProjectList();
   } catch (error) {
-    alert(error.message || '删除项目记录失败');
+    state.pendingDeleteProjectPath = '';
+    resetInlineDeleteConfirmations();
+    showAppMessage(getErrorText(error, '删除项目记录失败'));
   }
 }
 
 function render() {
   const hasProject = Boolean(state.projectPath && state.project);
   elements.projectPathText.textContent = hasProject
-    ? `${state.project.projectName || getFolderName(state.projectPath)} · 图片文件夹：${state.project.imagesFolderName || 'images'} · ${state.projectPath}`
+    ? `${state.project.projectName || getFolderName(state.projectPath)} · ${state.projectPath}`
     : '尚未选择项目文件夹';
   elements.newTrackButton.disabled = !hasProject;
   elements.saveProjectButton.disabled = !hasProject;
   elements.pinCompareButton.disabled = !hasProject || !state.selectedImageId;
+  updateCompareZoomButtons();
   elements.pinCompareButton.textContent = state.pinnedCompareImageId ? '取消固定' : '固定对比';
   elements.emptyState.hidden = hasProject && state.project.tracks.length > 0;
   elements.tracks.innerHTML = '';
@@ -320,7 +382,8 @@ function createTrackElement(track, trackIndex) {
   deleteTrackButton.type = 'button';
   deleteTrackButton.className = 'small-button danger-button';
   deleteTrackButton.textContent = '删除轨道';
-  deleteTrackButton.addEventListener('click', () => removeTrackRecord(track.id));
+  setInlineConfirmState(deleteTrackButton, state.pendingDeleteTrackId === track.id);
+  deleteTrackButton.addEventListener('click', () => removeTrackRecord(track.id, deleteTrackButton));
 
   label.append(trackName, trackMeta, renameTrackButton, renamePrefixButton, deleteTrackButton);
 
@@ -362,6 +425,7 @@ function createTrackElement(track, trackIndex) {
 function createImageCard(trackId, image) {
   const card = document.createElement('div');
   card.className = `image-card${image.id === state.selectedImageId ? ' selected' : ''}`;
+  card.dataset.imageId = image.id;
 
   const thumbButton = document.createElement('button');
   thumbButton.type = 'button';
@@ -369,11 +433,11 @@ function createImageCard(trackId, image) {
   thumbButton.addEventListener('click', (event) => {
     event.stopPropagation();
     selectImage(image.id);
-    render();
+    refreshSelectedImageView();
   });
 
   const img = document.createElement('img');
-  img.src = fileUrlFromRelativePath(image.relativePath);
+  img.src = fileUrlFromRelativePath(image.relativePath, imageCacheKey(image));
   img.alt = image.fileName;
   thumbButton.appendChild(img);
 
@@ -415,10 +479,11 @@ function createImageCard(trackId, image) {
   const deleteButton = document.createElement('button');
   deleteButton.type = 'button';
   deleteButton.className = 'delete-button';
-  deleteButton.textContent = '移除记录';
-  deleteButton.addEventListener('click', (event) => {
+  deleteButton.textContent = '删除图片';
+  setInlineConfirmState(deleteButton, state.pendingDeleteImageId === image.id);
+  deleteButton.addEventListener('click', async (event) => {
     event.stopPropagation();
-    removeImageRecord(trackId, image.id);
+    await deleteImageFile(trackId, image.id, deleteButton);
   });
 
   actions.append(deleteButton);
@@ -427,7 +492,7 @@ function createImageCard(trackId, image) {
   card.addEventListener('click', () => {
     if (state.selectedImageId === image.id) return;
     selectImage(image.id);
-    render();
+    refreshSelectedImageView();
   });
 
   return card;
@@ -445,6 +510,34 @@ function stopCardClick(element) {
   });
 }
 
+function setInlineConfirmState(button, isConfirming) {
+  button.textContent = isConfirming ? '确定' : button.textContent;
+  button.classList.toggle('confirm-delete', isConfirming);
+}
+
+function resetInlineDeleteConfirmations(exceptButton) {
+  document.querySelectorAll('.confirm-delete').forEach((button) => {
+    if (button === exceptButton) return;
+    button.classList.remove('confirm-delete');
+    if (button.classList.contains('delete-button')) {
+      button.textContent = '删除图片';
+    } else if (button.classList.contains('project-action-button')) {
+      button.textContent = '删除项目';
+    } else {
+      button.textContent = '删除轨道';
+    }
+  });
+}
+
+function markInlineDeleteConfirmation(button, type, id) {
+  resetInlineDeleteConfirmations(button);
+  state.pendingDeleteImageId = type === 'image' ? id : '';
+  state.pendingDeleteTrackId = type === 'track' ? id : '';
+  state.pendingDeleteProjectPath = type === 'project' ? id : '';
+  button.textContent = '确定';
+  button.classList.add('confirm-delete');
+}
+
 async function handleDrop(event, trackId) {
   if (!state.projectPath || !state.project) return;
 
@@ -460,7 +553,7 @@ async function handleDrop(event, trackId) {
             trackId,
             sourcePath: file.path
           })
-        : await window.imageRail.addImageFileDataToTrack({
+        : await window.imageRail.addImageRawFileDataToTrack({
             projectPath: state.projectPath,
             project: state.project,
             trackId,
@@ -472,7 +565,7 @@ async function handleDrop(event, trackId) {
       state.project = result.project;
       importedCount += 1;
     } catch (error) {
-      alert(error.message || '导入图片失败');
+      showAppMessage(getErrorText(error, '导入图片失败'));
     }
   }
 
@@ -485,7 +578,7 @@ async function handleDrop(event, trackId) {
       if (!file) continue;
 
       try {
-        const result = await window.imageRail.addImageFileDataToTrack({
+        const result = await window.imageRail.addImageRawFileDataToTrack({
           projectPath: state.projectPath,
           project: state.project,
           trackId,
@@ -497,7 +590,7 @@ async function handleDrop(event, trackId) {
         state.project = result.project;
         importedCount += 1;
       } catch (error) {
-        alert(error.message || '导入图片失败');
+        showAppMessage(getErrorText(error, '导入图片失败'));
       }
     }
   }
@@ -516,96 +609,16 @@ async function handleDrop(event, trackId) {
         state.project = result.project;
         importedCount += 1;
       } catch (error) {
-        alert(error.message || '从网页导入图片失败');
+        showAppMessage(getErrorText(error, '从网页导入图片失败'));
       }
     }
   }
 
   if (importedCount === 0) {
-    alert('没有识别到可导入的图片。请拖入 png、jpg、jpeg、webp、gif、bmp 或 avif 图片。');
+    showAppMessage('没有识别到可导入的图片。请拖入 png、jpg、jpeg、webp、gif、bmp 或 avif 图片。');
   }
 
   render();
-}
-
-async function importImagePaths(trackId, sourcePaths) {
-  if (!state.projectPath || !state.project || !sourcePaths.length) return;
-
-  try {
-    const result = await window.imageRail.addImagePathsToTrack({
-      projectPath: state.projectPath,
-      project: state.project,
-      trackId,
-      sourcePaths
-    });
-    state.project = result.project;
-    render();
-  } catch (error) {
-    alert(error.message || '导入图片失败');
-  }
-}
-
-function setTrackDragOver(trackId) {
-  document.querySelectorAll('.track-lane.drag-over').forEach((lane) => {
-    if (lane.dataset.trackId !== trackId) lane.classList.remove('drag-over');
-  });
-
-  const lane = trackId ? document.querySelector(`.track-lane[data-track-id="${CSS.escape(trackId)}"]`) : null;
-  if (lane) lane.classList.add('drag-over');
-  state.fileDropHoverTrackId = trackId || '';
-}
-
-function getTrackIdFromDropPosition(position) {
-  if (!position) return '';
-
-  const candidates = [
-    [position.x, position.y],
-    [position.x / window.devicePixelRatio, position.y / window.devicePixelRatio]
-  ];
-
-  for (const [x, y] of candidates) {
-    const element = document.elementFromPoint(x, y);
-    const lane = element?.closest?.('.track-lane');
-    if (lane?.dataset.trackId) return lane.dataset.trackId;
-  }
-
-  return '';
-}
-
-function setupTauriFileDropHandling() {
-  if (!window.imageRail?.onFileDropEvent) return;
-
-  Promise.resolve(window.imageRail.onFileDropEvent(async (event) => {
-    const payload = event?.payload || {};
-    const eventType = payload.type || '';
-
-    if (eventType === 'enter' || eventType === 'over') {
-      setTrackDragOver(getTrackIdFromDropPosition(payload.position));
-      return;
-    }
-
-    if (eventType === 'leave') {
-      setTrackDragOver('');
-      return;
-    }
-
-    if (eventType !== 'drop') return;
-
-    const sourcePaths = Array.isArray(payload.paths) ? payload.paths : [];
-    const trackId = getTrackIdFromDropPosition(payload.position) || state.fileDropHoverTrackId;
-    setTrackDragOver('');
-
-    if (!sourcePaths.length) return;
-
-    if (!trackId) {
-      alert('请把图片拖到某一条轨道的右侧区域内。');
-      return;
-    }
-
-    await importImagePaths(trackId, sourcePaths);
-  })).catch((error) => {
-    console.warn('Tauri file drop is not available.', error);
-  });
 }
 
 function getDraggedImageUrl(dataTransfer) {
@@ -647,14 +660,14 @@ async function renameTrack(trackId) {
 
   const newName = await askRenameValue({
     title: '重命名轨道',
-    description: `会重命名 ${state.project.imagesFolderName || 'images'} 里的轨道文件夹，并更新轨道内图片的保存路径。`,
+    description: '会重命名项目文件夹里的轨道文件夹，并更新轨道内图片的保存路径。',
     value: track.name
   });
   if (newName === null) return;
 
   const cleanName = newName.trim();
   if (!cleanName) {
-    alert('轨道名称不能为空');
+    showAppMessage('轨道名称不能为空');
     return;
   }
 
@@ -667,7 +680,7 @@ async function renameTrack(trackId) {
     });
     setProjectFromResult(result);
   } catch (error) {
-    alert(getRenameErrorMessage(error, '重命名轨道文件夹失败'));
+    showAppMessage(getRenameErrorMessage(error, '重命名轨道文件夹失败'));
   }
 }
 
@@ -685,7 +698,7 @@ async function renameTrackPrefix(trackId) {
 
   const cleanPrefix = cleanFilePrefix(newPrefix);
   if (!cleanPrefix) {
-    alert('图片名前缀不能为空');
+    showAppMessage('图片名前缀不能为空');
     return;
   }
 
@@ -698,7 +711,7 @@ async function renameTrackPrefix(trackId) {
     });
     setProjectFromResult(result);
   } catch (error) {
-    alert(getRenameErrorMessage(error, '重命名图片失败'));
+    showAppMessage(getRenameErrorMessage(error, '重命名图片失败'));
   }
 }
 
@@ -743,37 +756,76 @@ function updateImage(trackId, imageId, patch) {
   renderComparePanel();
 }
 
-function removeImageRecord(trackId, imageId) {
+async function deleteImageFile(trackId, imageId, button) {
   const track = findTrack(trackId);
   if (!track) return;
 
-  track.images = track.images.filter((image) => image.id !== imageId);
-  if (state.selectedImageId === imageId) state.selectedImageId = '';
-  if (state.pinnedCompareImageId === imageId) state.pinnedCompareImageId = '';
-  saveProject();
-  render();
+  const image = track.images.find((item) => item.id === imageId);
+  if (!image) return;
+
+  if (state.pendingDeleteImageId !== imageId) {
+    markInlineDeleteConfirmation(button, 'image', imageId);
+    return;
+  }
+
+  try {
+    const result = await window.imageRail.deleteImageFile({
+      projectPath: state.projectPath,
+      project: state.project,
+      trackId,
+      imageId
+    });
+    state.pendingDeleteImageId = '';
+    state.pendingDeleteTrackId = '';
+    state.pendingDeleteProjectPath = '';
+    setProjectFromResult(result);
+    if (state.selectedImageId === imageId) state.selectedImageId = '';
+    if (state.pinnedCompareImageId === imageId) state.pinnedCompareImageId = '';
+    render();
+  } catch (error) {
+    state.pendingDeleteImageId = '';
+    state.pendingDeleteTrackId = '';
+    state.pendingDeleteProjectPath = '';
+    resetInlineDeleteConfirmations();
+    showAppMessage(getRenameErrorMessage(error, '删除图片失败'));
+  }
 }
 
-function removeTrackRecord(trackId) {
+async function removeTrackRecord(trackId, button) {
   const track = findTrack(trackId);
   if (!track) return;
 
-  const confirmed = confirm(`确定删除“${track.name}”这条轨道吗？\n\n这只会删除应用里的轨道记录，不会删除硬盘里的轨道文件夹和图片。`);
-  if (!confirmed) return;
+  if (state.pendingDeleteTrackId !== trackId) {
+    markInlineDeleteConfirmation(button, 'track', trackId);
+    return;
+  }
 
   const removedImageIds = new Set(track.images.map((image) => image.id));
-  state.project.tracks = state.project.tracks.filter((item) => item.id !== trackId);
+  try {
+    if (removedImageIds.has(state.selectedImageId)) {
+      state.selectedImageId = '';
+    }
 
-  if (removedImageIds.has(state.selectedImageId)) {
-    state.selectedImageId = '';
+    if (removedImageIds.has(state.pinnedCompareImageId)) {
+      state.pinnedCompareImageId = '';
+    }
+
+    const result = await window.imageRail.deleteTrackFolder({
+      projectPath: state.projectPath,
+      project: state.project,
+      trackId
+    });
+    state.pendingDeleteImageId = '';
+    state.pendingDeleteTrackId = '';
+    state.pendingDeleteProjectPath = '';
+    setProjectFromResult(result);
+  } catch (error) {
+    state.pendingDeleteImageId = '';
+    state.pendingDeleteTrackId = '';
+    state.pendingDeleteProjectPath = '';
+    resetInlineDeleteConfirmations();
+    showAppMessage(getRenameErrorMessage(error, '删除轨道文件夹失败'));
   }
-
-  if (removedImageIds.has(state.pinnedCompareImageId)) {
-    state.pinnedCompareImageId = '';
-  }
-
-  saveProject();
-  render();
 }
 
 async function saveProject(options = {}) {
@@ -787,7 +839,7 @@ async function saveProject(options = {}) {
     state.project = result.project;
     if (!options.silent) render();
   } catch (error) {
-    alert(error.message || '保存失败');
+    showAppMessage(getErrorText(error, '保存失败'));
   }
 }
 
@@ -808,6 +860,26 @@ function findImageById(imageId) {
 
 function selectImage(imageId) {
   state.selectedImageId = imageId;
+  state.pendingDeleteImageId = '';
+  state.pendingDeleteTrackId = '';
+  state.pendingDeleteProjectPath = '';
+  resetInlineDeleteConfirmations();
+}
+
+function refreshSelectedImageView() {
+  document.querySelectorAll('.image-card.selected').forEach((card) => {
+    card.classList.remove('selected');
+  });
+
+  if (state.selectedImageId) {
+    document.querySelectorAll(`.image-card[data-image-id="${CSS.escape(state.selectedImageId)}"]`).forEach((card) => {
+      card.classList.add('selected');
+    });
+  }
+
+  const hasProject = Boolean(state.projectPath && state.project);
+  elements.pinCompareButton.disabled = !hasProject || !state.selectedImageId;
+  renderComparePanel();
 }
 
 function togglePinnedCompareImage() {
@@ -815,6 +887,18 @@ function togglePinnedCompareImage() {
 
   state.pinnedCompareImageId = state.pinnedCompareImageId ? '' : state.selectedImageId;
   render();
+}
+
+function changeViewportZoom(viewport, delta) {
+  if (!viewport) return;
+  const nextZoom = Number((getViewportZoom(viewport) + delta).toFixed(2));
+  setViewportZoom(viewport, nextZoom);
+}
+
+function changeActiveCompareZoom(delta) {
+  const viewport = getActiveCompareViewport();
+  activateCompareViewport(viewport);
+  changeViewportZoom(viewport, delta);
 }
 
 function renderComparePanel() {
@@ -836,10 +920,12 @@ function renderComparePanel() {
   if (pinned) {
     elements.compareContent.appendChild(createComparePane('固定图', pinned));
     elements.compareContent.appendChild(createComparePane('当前图', selected));
+    updateCompareZoomButtons();
     return;
   }
 
   elements.compareContent.appendChild(createComparePane('当前图', selected));
+  updateCompareZoomButtons();
 }
 
 function createComparePane(label, item) {
@@ -857,12 +943,20 @@ function createComparePane(label, item) {
   const imageButton = document.createElement('button');
   imageButton.type = 'button';
   imageButton.className = 'compare-image-button';
-  imageButton.addEventListener('click', () => openPreview(item.image));
+  imageButton.dataset.zoom = '1';
+  imageButton.style.setProperty('--compare-zoom', '1');
+  imageButton.addEventListener('dblclick', () => openPreview(item.image));
+  setupCompareImagePanZoom(imageButton);
+
+  const imageStage = document.createElement('div');
+  imageStage.className = 'compare-image-stage';
 
   const image = document.createElement('img');
-  image.src = fileUrlFromRelativePath(item.image.relativePath);
+  image.src = fileUrlFromRelativePath(item.image.relativePath, imageCacheKey(item.image));
   image.alt = item.image.fileName;
-  imageButton.appendChild(image);
+  image.draggable = false;
+  imageStage.appendChild(image);
+  imageButton.appendChild(imageStage);
 
   const caption = document.createElement('div');
   caption.className = 'compare-caption';
@@ -883,8 +977,71 @@ function createComparePane(label, item) {
   return pane;
 }
 
+function setupCompareImagePanZoom(viewport) {
+  let isDragging = false;
+  let lastX = 0;
+  let lastY = 0;
+  let panX = 0;
+  let panY = 0;
+
+  const applyPan = () => {
+    viewport.style.setProperty('--pan-x', `${panX}px`);
+    viewport.style.setProperty('--pan-y', `${panY}px`);
+  };
+
+  applyPan();
+
+  viewport.addEventListener('dragstart', (event) => {
+    event.preventDefault();
+  });
+
+  viewport.addEventListener('wheel', (event) => {
+    if (!state.selectedImageId) return;
+    event.preventDefault();
+
+    const direction = event.deltaY > 0 ? -1 : 1;
+
+    activateCompareViewport(viewport);
+    changeViewportZoom(viewport, direction * COMPARE_ZOOM_STEP);
+  }, { passive: false });
+
+  viewport.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    activateCompareViewport(viewport);
+    isDragging = true;
+    lastX = event.clientX;
+    lastY = event.clientY;
+    viewport.classList.add('dragging');
+    viewport.setPointerCapture(event.pointerId);
+  });
+
+  viewport.addEventListener('pointermove', (event) => {
+    if (!isDragging) return;
+    event.preventDefault();
+    panX += event.clientX - lastX;
+    panY += event.clientY - lastY;
+    applyPan();
+    lastX = event.clientX;
+    lastY = event.clientY;
+  });
+
+  const stopDragging = (event) => {
+    if (!isDragging) return;
+    isDragging = false;
+    viewport.classList.remove('dragging');
+    if (viewport.hasPointerCapture(event.pointerId)) {
+      viewport.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  viewport.addEventListener('pointerup', stopDragging);
+  viewport.addEventListener('pointercancel', stopDragging);
+  viewport.addEventListener('mouseenter', () => activateCompareViewport(viewport));
+}
+
 function openPreview(image) {
-  elements.previewImage.src = fileUrlFromRelativePath(image.relativePath);
+  elements.previewImage.src = fileUrlFromRelativePath(image.relativePath, imageCacheKey(image));
   elements.previewModal.hidden = false;
 }
 
@@ -894,7 +1051,7 @@ function closePreview() {
 }
 
 function getRenameErrorMessage(error, fallbackMessage) {
-  const message = String(error?.message || '');
+  const message = getErrorText(error, '');
 
   if (message.includes('EBUSY') || message.includes('EPERM') || message.includes('EACCES')) {
     return `${fallbackMessage}。\n\n可能是文件或文件夹正在被占用。请关闭正在打开这个项目的窗口，例如：资源管理器、图片查看器、Photoshop、ComfyUI、浏览器下载窗口等，然后再试一次。`;
@@ -943,6 +1100,57 @@ function cleanFilePrefix(value) {
     .slice(0, 60);
 }
 
+function setupCompareResizer() {
+  if (!elements.compareResizer) return;
+
+  let startX = 0;
+  let startWidth = state.comparePanelWidth;
+
+  const stopResize = () => {
+    document.body.classList.remove('resizing-compare');
+    window.removeEventListener('pointermove', resize);
+    window.removeEventListener('pointerup', stopResize);
+  };
+
+  const resize = (event) => {
+    const delta = startX - event.clientX;
+    state.comparePanelWidth = clamp(startWidth + delta, COMPARE_MIN_WIDTH, COMPARE_MAX_WIDTH);
+    applyComparePanelWidth();
+  };
+
+  elements.compareResizer.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    startX = event.clientX;
+    startWidth = state.comparePanelWidth;
+    document.body.classList.add('resizing-compare');
+    window.addEventListener('pointermove', resize);
+    window.addEventListener('pointerup', stopResize);
+  });
+}
+
+function setupWindowFrame() {
+  const dragRegions = document.querySelectorAll('.topbar, .window-drag-strip');
+  if (!dragRegions.length) return;
+
+  dragRegions.forEach((region) => {
+    region.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return;
+      if (event.target.closest('button, input, select, textarea')) return;
+      window.imageRail?.startWindowDrag?.()?.catch(() => {});
+    });
+
+    region.addEventListener('dblclick', (event) => {
+      if (event.target.closest('button, input, select, textarea')) return;
+      window.imageRail?.toggleMaximizeWindow?.()?.catch(() => {});
+    });
+  });
+}
+
+applyComparePanelWidth();
+updateCompareZoomButtons();
+setupCompareResizer();
+setupWindowFrame();
+
 elements.chooseProjectButton.addEventListener('click', openProjectModal);
 elements.createProjectButton.addEventListener('click', createProjectFromFolder);
 elements.closeProjectModalButton.addEventListener('click', closeProjectModal);
@@ -952,6 +1160,11 @@ elements.projectModal.addEventListener('click', (event) => {
 elements.newTrackButton.addEventListener('click', createTrack);
 elements.saveProjectButton.addEventListener('click', () => saveProject());
 elements.pinCompareButton.addEventListener('click', togglePinnedCompareImage);
+elements.zoomInButton.addEventListener('click', () => changeActiveCompareZoom(COMPARE_ZOOM_STEP));
+elements.zoomOutButton.addEventListener('click', () => changeActiveCompareZoom(-COMPARE_ZOOM_STEP));
+elements.minimizeWindowButton.addEventListener('click', () => window.imageRail?.minimizeWindow?.());
+elements.maximizeWindowButton.addEventListener('click', () => window.imageRail?.toggleMaximizeWindow?.());
+elements.closeWindowButton.addEventListener('click', () => window.imageRail?.closeWindow?.());
 elements.closePreviewButton.addEventListener('click', closePreview);
 elements.previewModal.addEventListener('click', (event) => {
   if (event.target === elements.previewModal) closePreview();
@@ -964,7 +1177,15 @@ elements.cancelRenameButton.addEventListener('click', () => closeRenameModal(nul
 elements.renameModal.addEventListener('click', (event) => {
   if (event.target === elements.renameModal) closeRenameModal(null);
 });
+elements.appMessageCloseButton.addEventListener('click', closeAppMessage);
+elements.appMessage.addEventListener('click', (event) => {
+  if (event.target === elements.appMessage) closeAppMessage();
+});
 window.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !elements.appMessage.hidden) {
+    closeAppMessage();
+  }
+
   if (event.key === 'Escape' && !elements.renameModal.hidden) {
     closeRenameModal(null);
   }
@@ -974,5 +1195,4 @@ window.addEventListener('keydown', (event) => {
   }
 });
 
-setupTauriFileDropHandling();
 render();

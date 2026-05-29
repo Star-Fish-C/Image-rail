@@ -14,7 +14,11 @@
         "width": 1280,
         "height": 820,
         "minWidth": 980,
-        "minHeight": 640
+        "minHeight": 640,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "dragDropEnabled": false
       }
     ],
     "security": {
@@ -28,6 +32,6 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "icon": []
+    "icon": ["icons/icon.ico"]
   }
 }
