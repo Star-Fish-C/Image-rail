@@ -21,6 +21,9 @@
       projectPath: payload.projectPath,
       projectDataFile: payload.projectDataFile
     }),
+    rebindProjectFolder: (payload) => invoke('rebind_project_folder_command', {
+      projectDataFile: payload.projectDataFile
+    }),
     saveProject: (payload) => invoke('save_project_command', {
       projectPath: payload.projectPath,
       project: payload.project
@@ -88,6 +91,10 @@
       project: payload.project,
       trackId: payload.trackId,
       newPrefix: payload.newPrefix
+    }),
+    revealImageInFolder: (payload) => invoke('reveal_image_in_folder_command', {
+      projectPath: payload.projectPath,
+      relativePath: payload.relativePath
     }),
     startWindowDrag: () => invoke('start_window_drag_command'),
     minimizeWindow: () => invoke('minimize_window_command'),

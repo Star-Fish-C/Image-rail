@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::ipc::{InvokeBody, Request};
 
@@ -19,6 +20,7 @@ fn main() {
             choose_project_folder,
             list_projects,
             open_existing_project,
+            rebind_project_folder_command,
             save_project_command,
             rename_project_command,
             delete_project_record_command,
@@ -30,6 +32,7 @@ fn main() {
             add_image_raw_file_data_to_track_command,
             add_image_url_to_track_command,
             rename_track_prefix_command,
+            reveal_image_in_folder_command,
             start_window_drag_command,
             minimize_window_command,
             toggle_maximize_window_command,
@@ -546,6 +549,7 @@ fn list_projects() -> AppResult<Vec<Value>> {
     Ok(records
         .into_iter()
         .map(|(project_path, project)| {
+            let path_exists = Path::new(&project_path).exists();
             let tracks = project
                 .get("tracks")
                 .and_then(Value::as_array)
@@ -570,7 +574,8 @@ fn list_projects() -> AppResult<Vec<Value>> {
                 "imagesFolderName": string_field(&project, "imagesFolderName"),
                 "trackCount": tracks.len(),
                 "imageCount": image_count,
-                "updatedAt": string_field(&project, "updatedAt")
+                "updatedAt": string_field(&project, "updatedAt"),
+                "pathExists": path_exists
             })
         })
         .collect())
@@ -579,8 +584,33 @@ fn list_projects() -> AppResult<Vec<Value>> {
 #[tauri::command]
 fn open_existing_project(project_path: String, project_data_file: String) -> AppResult<Value> {
     let project = read_project_from_data_file(&project_data_file)?;
+    if !Path::new(&project_path).exists() {
+        return Err("项目文件夹不存在，请重新绑定项目位置".to_string());
+    }
     ensure_dir(&project_images_dir(&project_path, &project))?;
     Ok(json!({ "projectPath": project_path, "project": project }))
+}
+
+#[tauri::command]
+fn rebind_project_folder_command(project_data_file: String) -> AppResult<Option<Value>> {
+    let Some(project_folder) = rfd::FileDialog::new()
+        .set_title("重新选择 ImageRail 项目文件夹")
+        .pick_folder()
+    else {
+        return Ok(None);
+    };
+
+    let project_path = project_folder.to_string_lossy().to_string();
+    let mut project = read_project_from_data_file(&project_data_file)?;
+    let project_name = project_folder
+        .file_name()
+        .and_then(|item| item.to_str())
+        .unwrap_or("ImageRail Project");
+    set_field(&mut project, "projectName", json!(project_name));
+    let saved_project = save_project(&project_path, project)?;
+    Ok(Some(
+        json!({ "projectPath": project_path, "project": saved_project }),
+    ))
 }
 
 #[tauri::command]
@@ -782,6 +812,48 @@ fn delete_image_file_command(
     images.remove(image_index);
     let saved_project = save_project(&project_path, working_project)?;
     Ok(json!({ "projectPath": project_path, "project": saved_project }))
+}
+
+#[tauri::command]
+fn reveal_image_in_folder_command(project_path: String, relative_path: String) -> AppResult<()> {
+    if relative_path.trim().is_empty() {
+        return Err("没有找到图片路径".to_string());
+    }
+
+    let image_path = project_scoped_file_path(&project_path, &relative_path)?;
+    if !image_path.exists() {
+        return Err("图片文件不存在，可能已经被移动、删除或重命名".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer")
+            .arg(format!("/select,{}", image_path.to_string_lossy()))
+            .spawn()
+            .map_err(|error| error.to_string())?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg("-R")
+            .arg(&image_path)
+            .spawn()
+            .map_err(|error| error.to_string())?;
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let folder = image_path
+            .parent()
+            .ok_or_else(|| "没有找到图片所在文件夹".to_string())?;
+        Command::new("xdg-open")
+            .arg(folder)
+            .spawn()
+            .map_err(|error| error.to_string())?;
+    }
+
+    Ok(())
 }
 
 #[tauri::command]

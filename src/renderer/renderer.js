@@ -21,6 +21,7 @@ const state = {
   pendingDeleteImageId: '',
   pendingDeleteTrackId: '',
   pendingDeleteProjectPath: '',
+  contextMenuImage: null,
   activeCompareViewport: null,
   comparePanelWidth: Number(localStorage.getItem(COMPARE_WIDTH_STORAGE_KEY)) || 390
 };
@@ -54,6 +55,8 @@ const elements = {
   appMessage: document.querySelector('#appMessage'),
   appMessageText: document.querySelector('#appMessageText'),
   appMessageCloseButton: document.querySelector('#appMessageCloseButton'),
+  contextMenu: document.querySelector('#contextMenu'),
+  revealImageButton: document.querySelector('#revealImageButton'),
   minimizeWindowButton: document.querySelector('#minimizeWindowButton'),
   maximizeWindowButton: document.querySelector('#maximizeWindowButton'),
   closeWindowButton: document.querySelector('#closeWindowButton')
@@ -127,12 +130,30 @@ function getErrorText(error, fallbackMessage) {
 
 function fileUrlFromRelativePath(relativePath, cacheKey = '') {
   if (!state.projectPath || !relativePath) return '';
-  const normalizedProjectPath = state.projectPath.replace(/\\/g, '/');
-  const fullPath = `${normalizedProjectPath}/${relativePath}`;
+  const fullPath = fullPathFromRelativePath(relativePath);
   const baseUrl = window.imageRail?.fileUrlFromPath
     ? window.imageRail.fileUrlFromPath(fullPath)
     : encodeURI(`file:///${fullPath}`);
   return cacheKey ? `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}v=${encodeURIComponent(cacheKey)}` : baseUrl;
+}
+
+function fullPathFromRelativePath(relativePath) {
+  const normalizedProjectPath = state.projectPath.replace(/\\/g, '/');
+  return `${normalizedProjectPath}/${String(relativePath || '').replace(/\\/g, '/')}`;
+}
+
+function fileUriFromPath(filePath) {
+  return encodeURI(`file:///${String(filePath || '').replace(/\\/g, '/')}`);
+}
+
+function imageMimeFromName(fileName) {
+  const extension = String(fileName || '').split('.').pop().toLowerCase();
+  if (extension === 'jpg' || extension === 'jpeg') return 'image/jpeg';
+  if (extension === 'webp') return 'image/webp';
+  if (extension === 'gif') return 'image/gif';
+  if (extension === 'bmp') return 'image/bmp';
+  if (extension === 'avif') return 'image/avif';
+  return 'image/png';
 }
 
 function imageCacheKey(image) {
@@ -194,12 +215,18 @@ async function renderProjectList() {
 
 function createProjectListItem(project) {
   const item = document.createElement('div');
-  item.className = 'project-list-item';
+  const isMissing = project.pathExists === false;
+  item.className = `project-list-item${isMissing ? ' project-list-item-missing' : ''}`;
 
   const openButton = document.createElement('button');
   openButton.type = 'button';
   openButton.className = 'project-open-button';
   openButton.addEventListener('click', async () => {
+    if (isMissing) {
+      await rebindProjectFromList(project);
+      return;
+    }
+
     try {
       const result = await window.imageRail.openExistingProject({
         projectPath: project.projectPath,
@@ -216,7 +243,9 @@ function createProjectListItem(project) {
   title.textContent = project.projectName || getFolderName(project.projectPath);
 
   const meta = document.createElement('span');
-  meta.textContent = `${project.trackCount} 条轨道 · ${project.imageCount} 张图片`;
+  meta.textContent = isMissing
+    ? `位置失效 · ${project.trackCount} 条轨道 · ${project.imageCount} 张图片`
+    : `${project.trackCount} 条轨道 · ${project.imageCount} 张图片`;
 
   const pathText = document.createElement('small');
   pathText.textContent = project.imagesFolderName
@@ -229,10 +258,13 @@ function createProjectListItem(project) {
   actions.className = 'project-item-actions';
 
   const renameProjectButton = createProjectActionButton('重命名项目', () => renameProjectFromList(project));
+  const rebindProjectButton = createProjectActionButton('重新绑定', () => rebindProjectFromList(project), 'warning-button');
   const deleteProjectButton = createProjectActionButton('删除项目', () => deleteProjectFromList(project, deleteProjectButton), 'danger-button');
   setInlineConfirmState(deleteProjectButton, state.pendingDeleteProjectPath === project.projectPath);
 
-  actions.append(renameProjectButton, deleteProjectButton);
+  actions.append(renameProjectButton);
+  if (isMissing) actions.append(rebindProjectButton);
+  actions.append(deleteProjectButton);
   item.append(openButton, actions);
   return item;
 }
@@ -255,6 +287,22 @@ async function createProjectFromFolder() {
   if (result) {
     setProject(result.projectPath, result.project);
     closeProjectModal();
+  }
+}
+
+async function rebindProjectFromList(project) {
+  try {
+    const result = await window.imageRail.rebindProjectFolder({
+      projectDataFile: project.projectDataFile
+    });
+
+    if (!result) return;
+
+    setProject(result.projectPath, result.project);
+    await renderProjectList();
+    closeProjectModal();
+  } catch (error) {
+    showAppMessage(getErrorText(error, '重新绑定项目位置失败'));
   }
 }
 
@@ -430,6 +478,7 @@ function createImageCard(trackId, image) {
   const thumbButton = document.createElement('button');
   thumbButton.type = 'button';
   thumbButton.className = 'thumb-button';
+  thumbButton.draggable = true;
   thumbButton.addEventListener('click', (event) => {
     event.stopPropagation();
     selectImage(image.id);
@@ -439,7 +488,9 @@ function createImageCard(trackId, image) {
   const img = document.createElement('img');
   img.src = fileUrlFromRelativePath(image.relativePath, imageCacheKey(image));
   img.alt = image.fileName;
+  img.draggable = true;
   thumbButton.appendChild(img);
+  setupImageFileInteractions(thumbButton, img, image);
 
   const body = document.createElement('div');
   body.className = 'card-body';
@@ -500,6 +551,75 @@ function createImageCard(trackId, image) {
 
 function findTrack(trackId) {
   return state.project?.tracks.find((item) => item.id === trackId) || null;
+}
+
+function setupImageFileInteractions(thumbButton, imageElement, image) {
+  const handleContextMenu = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    showImageContextMenu(event.clientX, event.clientY, image);
+  };
+
+  const handleDragStart = (event) => {
+    if (!state.projectPath || !image.relativePath) {
+      event.preventDefault();
+      return;
+    }
+
+    const fullPath = fullPathFromRelativePath(image.relativePath);
+    const fileUri = fileUriFromPath(fullPath);
+    const mimeType = imageMimeFromName(image.fileName);
+
+    event.dataTransfer.effectAllowed = 'copy';
+    event.dataTransfer.setData('text/plain', fullPath);
+    event.dataTransfer.setData('text/uri-list', fileUri);
+    event.dataTransfer.setData('DownloadURL', `${mimeType}:${image.fileName}:${fileUri}`);
+
+    if (imageElement) {
+      event.dataTransfer.setDragImage(imageElement, imageElement.width / 2, imageElement.height / 2);
+    }
+  };
+
+  thumbButton.addEventListener('contextmenu', handleContextMenu);
+  imageElement.addEventListener('contextmenu', handleContextMenu);
+  thumbButton.addEventListener('dragstart', handleDragStart);
+  imageElement.addEventListener('dragstart', handleDragStart);
+}
+
+function showImageContextMenu(x, y, image) {
+  if (!elements.contextMenu) return;
+
+  state.contextMenuImage = image;
+  elements.contextMenu.hidden = false;
+
+  const menuRect = elements.contextMenu.getBoundingClientRect();
+  const left = Math.min(x, window.innerWidth - menuRect.width - 8);
+  const top = Math.min(y, window.innerHeight - menuRect.height - 8);
+
+  elements.contextMenu.style.left = `${Math.max(8, left)}px`;
+  elements.contextMenu.style.top = `${Math.max(8, top)}px`;
+}
+
+function closeContextMenu() {
+  if (!elements.contextMenu) return;
+  elements.contextMenu.hidden = true;
+  state.contextMenuImage = null;
+}
+
+async function revealContextMenuImage() {
+  const image = state.contextMenuImage;
+  closeContextMenu();
+
+  if (!image) return;
+
+  try {
+    await window.imageRail.revealImageInFolder({
+      projectPath: state.projectPath,
+      relativePath: image.relativePath
+    });
+  } catch (error) {
+    showAppMessage(getErrorText(error, '在文件夹中显示图片失败'));
+  }
 }
 
 function stopCardClick(element) {
@@ -1181,7 +1301,22 @@ elements.appMessageCloseButton.addEventListener('click', closeAppMessage);
 elements.appMessage.addEventListener('click', (event) => {
   if (event.target === elements.appMessage) closeAppMessage();
 });
+elements.revealImageButton.addEventListener('click', revealContextMenuImage);
+document.addEventListener('contextmenu', (event) => {
+  event.preventDefault();
+  closeContextMenu();
+});
+document.addEventListener('pointerdown', (event) => {
+  if (!elements.contextMenu.hidden && !event.target.closest('.context-menu')) {
+    closeContextMenu();
+  }
+});
+window.addEventListener('blur', closeContextMenu);
 window.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !elements.contextMenu.hidden) {
+    closeContextMenu();
+  }
+
   if (event.key === 'Escape' && !elements.appMessage.hidden) {
     closeAppMessage();
   }
