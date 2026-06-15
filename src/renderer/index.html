@@ -30,7 +30,7 @@
         <section class="rail-board">
           <div class="empty-state" id="emptyState">
             <h2>先选择或创建一个项目</h2>
-            <p>点击顶部“选择项目”，从已创建项目中打开，或选择一个文件夹创建新项目。</p>
+            <p>点击顶部“选择项目”，从已创建项目中打开，或选择一个位置创建新项目。</p>
           </div>
           <div class="tracks" id="tracks"></div>
         </section>
@@ -75,13 +75,13 @@
         <div class="project-dialog-header">
           <div>
             <h2>选择项目</h2>
-            <p>打开已创建项目，或选择一个文件夹创建新项目。</p>
+            <p>打开已创建项目，或选择一个位置创建新项目。</p>
           </div>
           <button id="closeProjectModalButton" type="button">关闭</button>
         </div>
         <div id="projectList" class="project-list"></div>
         <div class="project-dialog-actions">
-          <button id="createProjectButton" type="button">选择文件夹创建项目</button>
+          <button id="createProjectButton" type="button">选择位置创建项目</button>
         </div>
       </section>
     </div>
@@ -94,6 +94,8 @@
     </div>
 
     <div class="context-menu" id="contextMenu" hidden>
+      <button id="copyImageButton" type="button">复制</button>
+      <button id="pasteImageButton" type="button">粘贴</button>
       <button id="revealImageButton" type="button">在文件夹中打开</button>
     </div>
 

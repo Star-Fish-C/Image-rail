@@ -22,6 +22,7 @@ const state = {
   pendingDeleteTrackId: '',
   pendingDeleteProjectPath: '',
   contextMenuImage: null,
+  contextMenuTrackId: '',
   activeCompareViewport: null,
   comparePanelWidth: Number(localStorage.getItem(COMPARE_WIDTH_STORAGE_KEY)) || 390
 };
@@ -56,6 +57,8 @@ const elements = {
   appMessageText: document.querySelector('#appMessageText'),
   appMessageCloseButton: document.querySelector('#appMessageCloseButton'),
   contextMenu: document.querySelector('#contextMenu'),
+  copyImageButton: document.querySelector('#copyImageButton'),
+  pasteImageButton: document.querySelector('#pasteImageButton'),
   revealImageButton: document.querySelector('#revealImageButton'),
   minimizeWindowButton: document.querySelector('#minimizeWindowButton'),
   maximizeWindowButton: document.querySelector('#maximizeWindowButton'),
@@ -197,7 +200,7 @@ async function renderProjectList() {
     if (projects.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'project-list-empty';
-      empty.textContent = '还没有已创建项目。请点击下方按钮选择文件夹创建项目。';
+      empty.textContent = '还没有已创建项目。请点击下方按钮选择一个位置创建项目。';
       elements.projectList.appendChild(empty);
       return;
     }
@@ -318,7 +321,7 @@ async function renameProjectFromList(project) {
   const currentName = project.projectName || getFolderName(project.projectPath);
   const newName = await askRenameValue({
     title: '重命名项目',
-    description: '只修改 ImageRail 里的项目显示名称，不会修改硬盘上的项目文件夹。',
+    description: '会同时修改 ImageRail 里的项目名称和硬盘上的项目文件夹名称。',
     value: currentName
   });
   if (newName === null) return;
@@ -343,7 +346,7 @@ async function renameProjectFromList(project) {
 
     await renderProjectList();
   } catch (error) {
-    showAppMessage(getErrorText(error, '重命名项目失败'));
+    showAppMessage(getRenameErrorMessage(error, '重命名项目文件夹失败'));
   }
 }
 
@@ -455,6 +458,24 @@ function createTrackElement(track, trackIndex) {
     await handleDrop(event, track.id);
   });
 
+  lane.addEventListener('wheel', (event) => {
+    const horizontalDelta = Math.abs(event.deltaX) > Math.abs(event.deltaY)
+      ? event.deltaX
+      : event.deltaY;
+
+    if (horizontalDelta === 0) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    lane.scrollLeft += horizontalDelta;
+  }, { passive: false });
+
+  lane.addEventListener('contextmenu', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    showImageContextMenu(event.clientX, event.clientY, track.id, null);
+  });
+
   if (track.images.length === 0) {
     const hint = document.createElement('div');
     hint.className = 'drop-hint';
@@ -490,7 +511,7 @@ function createImageCard(trackId, image) {
   img.alt = image.fileName;
   img.draggable = true;
   thumbButton.appendChild(img);
-  setupImageFileInteractions(thumbButton, img, image);
+  setupImageFileInteractions(thumbButton, img, trackId, image);
 
   const body = document.createElement('div');
   body.className = 'card-body';
@@ -553,11 +574,11 @@ function findTrack(trackId) {
   return state.project?.tracks.find((item) => item.id === trackId) || null;
 }
 
-function setupImageFileInteractions(thumbButton, imageElement, image) {
+function setupImageFileInteractions(thumbButton, imageElement, trackId, image) {
   const handleContextMenu = (event) => {
     event.preventDefault();
     event.stopPropagation();
-    showImageContextMenu(event.clientX, event.clientY, image);
+    showImageContextMenu(event.clientX, event.clientY, trackId, image);
   };
 
   const handleDragStart = (event) => {
@@ -586,11 +607,16 @@ function setupImageFileInteractions(thumbButton, imageElement, image) {
   imageElement.addEventListener('dragstart', handleDragStart);
 }
 
-function showImageContextMenu(x, y, image) {
+function showImageContextMenu(x, y, trackId, image) {
   if (!elements.contextMenu) return;
 
   state.contextMenuImage = image;
+  state.contextMenuTrackId = trackId;
+  elements.copyImageButton.disabled = !image;
+  elements.revealImageButton.disabled = !image;
+  elements.pasteImageButton.disabled = true;
   elements.contextMenu.hidden = false;
+  updatePasteButtonState();
 
   const menuRect = elements.contextMenu.getBoundingClientRect();
   const left = Math.min(x, window.innerWidth - menuRect.width - 8);
@@ -604,6 +630,102 @@ function closeContextMenu() {
   if (!elements.contextMenu) return;
   elements.contextMenu.hidden = true;
   state.contextMenuImage = null;
+  state.contextMenuTrackId = '';
+}
+
+async function updatePasteButtonState() {
+  if (!elements.pasteImageButton || elements.contextMenu.hidden) return;
+  elements.pasteImageButton.disabled = !(await clipboardHasImage());
+}
+
+async function clipboardHasImage() {
+  if (!navigator.clipboard?.read) return false;
+
+  try {
+    const items = await navigator.clipboard.read();
+    return items.some((item) => item.types.some((type) => type.startsWith('image/')));
+  } catch (error) {
+    return false;
+  }
+}
+
+async function readClipboardImage() {
+  if (!navigator.clipboard?.read) {
+    throw new Error('当前系统不支持读取剪切板图片');
+  }
+
+  const items = await navigator.clipboard.read();
+  for (const item of items) {
+    const imageType = item.types.find((type) => type.startsWith('image/'));
+    if (imageType) {
+      return {
+        blob: await item.getType(imageType),
+        mimeType: imageType
+      };
+    }
+  }
+
+  throw new Error('剪切板中没有图片');
+}
+
+function fileExtensionFromMime(mimeType) {
+  const cleanType = String(mimeType || '').toLowerCase();
+  if (cleanType.includes('jpeg')) return '.jpg';
+  if (cleanType.includes('webp')) return '.webp';
+  if (cleanType.includes('gif')) return '.gif';
+  if (cleanType.includes('bmp')) return '.bmp';
+  if (cleanType.includes('avif')) return '.avif';
+  return '.png';
+}
+
+async function copyContextMenuImage() {
+  const image = state.contextMenuImage;
+  closeContextMenu();
+
+  if (!image) return;
+
+  if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+    showAppMessage('当前系统不支持复制图片到剪切板');
+    return;
+  }
+
+  try {
+    const response = await fetch(fileUrlFromRelativePath(image.relativePath, imageCacheKey(image)));
+    const blob = await response.blob();
+    const mimeType = blob.type || imageMimeFromName(image.fileName);
+    await navigator.clipboard.write([
+      new ClipboardItem({
+        [mimeType]: blob
+      })
+    ]);
+  } catch (error) {
+    showAppMessage(getErrorText(error, '复制图片失败'));
+  }
+}
+
+async function pasteContextMenuImage() {
+  const trackId = state.contextMenuTrackId;
+  closeContextMenu();
+
+  if (!trackId) return;
+
+  try {
+    const clipboardImage = await readClipboardImage();
+    const extension = fileExtensionFromMime(clipboardImage.mimeType);
+    const result = await window.imageRail.addImageRawFileDataToTrack({
+      projectPath: state.projectPath,
+      project: state.project,
+      trackId,
+      fileName: `clipboard_${Date.now()}${extension}`,
+      mimeType: clipboardImage.mimeType,
+      fileData: await clipboardImage.blob.arrayBuffer()
+    });
+
+    state.project = result.project;
+    render();
+  } catch (error) {
+    showAppMessage(getErrorText(error, '粘贴图片失败'));
+  }
 }
 
 async function revealContextMenuImage() {
@@ -1173,8 +1295,14 @@ function closePreview() {
 function getRenameErrorMessage(error, fallbackMessage) {
   const message = getErrorText(error, '');
 
-  if (message.includes('EBUSY') || message.includes('EPERM') || message.includes('EACCES')) {
-    return `${fallbackMessage}。\n\n可能是文件或文件夹正在被占用。请关闭正在打开这个项目的窗口，例如：资源管理器、图片查看器、Photoshop、ComfyUI、浏览器下载窗口等，然后再试一次。`;
+  if (
+    message.includes('EBUSY') ||
+    message.includes('EPERM') ||
+    message.includes('EACCES') ||
+    message.includes('拒绝访问') ||
+    message.toLowerCase().includes('access is denied')
+  ) {
+    return `${fallbackMessage}。\n\n项目文件夹可能已经被打开或正在被其他软件占用。请关闭资源管理器、图片查看器、Photoshop、ComfyUI 等正在使用这个项目文件夹的窗口，然后再重命名。`;
   }
 
   if (message.includes('Already exists') || message.includes('EEXIST')) {
@@ -1301,6 +1429,8 @@ elements.appMessageCloseButton.addEventListener('click', closeAppMessage);
 elements.appMessage.addEventListener('click', (event) => {
   if (event.target === elements.appMessage) closeAppMessage();
 });
+elements.copyImageButton.addEventListener('click', copyContextMenuImage);
+elements.pasteImageButton.addEventListener('click', pasteContextMenuImage);
 elements.revealImageButton.addEventListener('click', revealContextMenuImage);
 document.addEventListener('contextmenu', (event) => {
   event.preventDefault();

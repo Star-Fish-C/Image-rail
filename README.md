@@ -34,17 +34,18 @@ https://github.com/Star-Fish-C/Image-rail/releases
 
 ## 项目文件结构
 
-创建项目时，选择一个项目文件夹后，ImageRail 会直接在该文件夹内创建轨道文件夹。
+创建项目时，选择一个保存位置后，ImageRail 会先在该位置内创建一个项目文件夹，再在项目文件夹内创建轨道文件夹。
 
 示例：
 
 ```text
-项目文件夹/
-├─ track_A/
-│  ├─ A_1.png
-│  └─ A_2.png
-├─ track_B/
-│  └─ B_1.png
+你选择的文件夹/
+└─ ImageRail_Project/
+   ├─ track_A/
+   │  ├─ A_1.png
+   │  └─ A_2.png
+   └─ track_B/
+      └─ B_1.png
 ```
 
 项目列表和项目数据保存在应用目录下的 `project-data` 文件夹中，不直接放进你选择的项目文件夹。
@@ -63,4 +64,3 @@ https://github.com/Star-Fish-C/Image-rail/releases
 ## 贡献者
 
 - Star-Fish-C
-

@@ -1148,6 +1148,12 @@ body.resizing-compare .compare-resizer {
   box-shadow: none;
 }
 
+.context-menu button:disabled {
+  color: rgba(113, 128, 150, 0.48);
+  opacity: 1;
+  cursor: not-allowed;
+}
+
 @keyframes rise-in {
   from {
     opacity: 0;

@@ -72,6 +72,19 @@ fn ensure_dir(path: &Path) -> AppResult<()> {
     fs::create_dir_all(path).map_err(|error| error.to_string())
 }
 
+fn unique_child_folder(parent: &Path, base_name: &str) -> PathBuf {
+    let clean_base_name = sanitize_folder_name(base_name);
+    let mut candidate = parent.join(&clean_base_name);
+    let mut index = 2;
+
+    while candidate.exists() {
+        candidate = parent.join(format!("{}_{}", clean_base_name, index));
+        index += 1;
+    }
+
+    candidate
+}
+
 fn sanitize_file_name(value: &str) -> String {
     let mut output = String::new();
     for character in value.chars() {
@@ -521,13 +534,15 @@ where
 
 #[tauri::command]
 fn choose_project_folder() -> AppResult<Option<Value>> {
-    let Some(project_folder) = rfd::FileDialog::new()
-        .set_title("选择文件夹创建 ImageRail 项目")
+    let Some(parent_folder) = rfd::FileDialog::new()
+        .set_title("选择一个位置创建 ImageRail 项目")
         .pick_folder()
     else {
         return Ok(None);
     };
 
+    let project_folder = unique_child_folder(&parent_folder, "ImageRail_Project");
+    ensure_dir(&project_folder)?;
     let project_path = project_folder.to_string_lossy().to_string();
     let mut project = create_empty_project();
     let project_name = project_folder
@@ -625,14 +640,36 @@ fn rename_project_command(
     project: Value,
     new_project_name: String,
 ) -> AppResult<Value> {
-    let clean_name = new_project_name.trim();
+    let clean_name = sanitize_folder_name(&new_project_name);
     if clean_name.is_empty() {
         return Err("项目名称不能为空".to_string());
     }
+
+    let old_project_path = Path::new(&project_path);
+    if !old_project_path.exists() {
+        return Err("项目文件夹不存在，请重新绑定项目位置".to_string());
+    }
+
+    let parent_path = old_project_path
+        .parent()
+        .ok_or_else(|| "无法找到项目文件夹所在位置".to_string())?;
+    let new_project_path = parent_path.join(&clean_name);
+    let final_project_path = if old_project_path == new_project_path {
+        old_project_path.to_path_buf()
+    } else {
+        if new_project_path.exists() {
+            return Err(format!("Already exists: {}", clean_name));
+        }
+
+        fs::rename(old_project_path, &new_project_path).map_err(|error| error.to_string())?;
+        new_project_path
+    };
+
+    let final_project_path_text = final_project_path.to_string_lossy().to_string();
     let mut working_project = normalize_project(project);
     set_field(&mut working_project, "projectName", json!(clean_name));
-    let saved_project = save_project(&project_path, working_project)?;
-    Ok(json!({ "projectPath": project_path, "project": saved_project }))
+    let saved_project = save_project(&final_project_path_text, working_project)?;
+    Ok(json!({ "projectPath": final_project_path_text, "project": saved_project }))
 }
 
 #[tauri::command]
