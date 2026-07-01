@@ -552,21 +552,6 @@ function createImageCard(trackId, image) {
   const card = document.createElement('div');
   card.className = `image-card${image.id === state.selectedImageId ? ' selected' : ''}`;
   card.dataset.imageId = image.id;
-  card.draggable = true;
-  card.addEventListener('dragstart', (event) => {
-    if (event.target.closest('textarea, select, .delete-button')) {
-      event.preventDefault();
-      return;
-    }
-
-    state.draggedImage = { trackId, imageId: image.id };
-    event.dataTransfer.effectAllowed = 'copyMove';
-    event.dataTransfer.setData('application/x-imagerail-image', JSON.stringify(state.draggedImage));
-  });
-  card.addEventListener('dragend', () => {
-    state.draggedImage = null;
-    document.querySelectorAll('.image-card.drag-over-image').forEach((item) => item.classList.remove('drag-over-image', 'drag-before', 'drag-after'));
-  });
   card.addEventListener('dragover', (event) => {
     if (!dataTransferHasType(event.dataTransfer, 'application/x-imagerail-image')) return;
     event.preventDefault();
@@ -607,6 +592,10 @@ function createImageCard(trackId, image) {
 
   const body = document.createElement('div');
   body.className = 'card-body';
+  setupImageReorderInteractions(body, trackId, image);
+
+  const titleRow = document.createElement('div');
+  titleRow.className = 'card-title-row';
 
   const fileName = document.createElement('div');
   fileName.className = 'file-name';
@@ -615,6 +604,7 @@ function createImageCard(trackId, image) {
   const version = document.createElement('div');
   version.className = 'version';
   version.textContent = `版本 ${image.version}`;
+  titleRow.append(fileName, version);
 
   const note = document.createElement('textarea');
   note.placeholder = '备注';
@@ -650,8 +640,8 @@ function createImageCard(trackId, image) {
     await deleteImageFile(trackId, image.id, deleteButton);
   });
 
-  actions.append(deleteButton);
-  body.append(fileName, version, note, status, actions);
+  actions.append(status, deleteButton);
+  body.append(titleRow, note, actions);
   card.append(thumbButton, body);
   card.addEventListener('click', () => {
     if (state.selectedImageId === image.id) return;
@@ -668,6 +658,25 @@ function findTrack(trackId) {
 
 function dataTransferHasType(dataTransfer, type) {
   return Array.from(dataTransfer?.types || []).includes(type);
+}
+
+function setupImageReorderInteractions(handle, trackId, image) {
+  handle.draggable = true;
+  handle.addEventListener('dragstart', (event) => {
+    if (event.target.closest('textarea, select, .delete-button')) {
+      event.preventDefault();
+      return;
+    }
+
+    state.draggedImage = { trackId, imageId: image.id };
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('application/x-imagerail-image', JSON.stringify(state.draggedImage));
+  });
+
+  handle.addEventListener('dragend', () => {
+    state.draggedImage = null;
+    document.querySelectorAll('.image-card.drag-over-image').forEach((item) => item.classList.remove('drag-over-image', 'drag-before', 'drag-after'));
+  });
 }
 
 function moveArrayItem(items, fromIndex, toIndex) {
@@ -737,6 +746,7 @@ function setupImageFileInteractions(thumbButton, imageElement, trackId, image) {
   };
 
   const handleDragStart = (event) => {
+    event.stopPropagation();
     if (!state.projectPath || !image.relativePath) {
       event.preventDefault();
       return;
@@ -750,6 +760,7 @@ function setupImageFileInteractions(thumbButton, imageElement, trackId, image) {
     event.dataTransfer.setData('text/plain', fullPath);
     event.dataTransfer.setData('text/uri-list', fileUri);
     event.dataTransfer.setData('DownloadURL', `${mimeType}:${image.fileName}:${fileUri}`);
+    event.dataTransfer.setData('text/html', `<img src="${fileUri}" alt="${escapeHtml(image.fileName)}">`);
 
     if (imageElement) {
       event.dataTransfer.setDragImage(imageElement, imageElement.width / 2, imageElement.height / 2);
