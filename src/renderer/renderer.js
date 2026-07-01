@@ -23,6 +23,8 @@ const state = {
   pendingDeleteProjectPath: '',
   contextMenuImage: null,
   contextMenuTrackId: '',
+  draggedTrackId: '',
+  draggedImage: null,
   activeCompareViewport: null,
   comparePanelWidth: Number(localStorage.getItem(COMPARE_WIDTH_STORAGE_KEY)) || 390
 };
@@ -57,9 +59,12 @@ const elements = {
   appMessageText: document.querySelector('#appMessageText'),
   appMessageCloseButton: document.querySelector('#appMessageCloseButton'),
   contextMenu: document.querySelector('#contextMenu'),
+  renameImageButton: document.querySelector('#renameImageButton'),
+  copyPathButton: document.querySelector('#copyPathButton'),
   copyImageButton: document.querySelector('#copyImageButton'),
   pasteImageButton: document.querySelector('#pasteImageButton'),
   revealImageButton: document.querySelector('#revealImageButton'),
+  deleteContextImageButton: document.querySelector('#deleteContextImageButton'),
   minimizeWindowButton: document.querySelector('#minimizeWindowButton'),
   maximizeWindowButton: document.querySelector('#maximizeWindowButton'),
   closeWindowButton: document.querySelector('#closeWindowButton')
@@ -285,7 +290,22 @@ function createProjectActionButton(label, onClick, extraClass = '') {
 }
 
 async function createProjectFromFolder() {
-  const result = await window.imageRail.chooseProjectFolder();
+  const projectName = await askRenameValue({
+    title: '创建项目',
+    description: '先输入项目名称。ImageRail 会在你接下来选择的位置里创建同名项目文件夹。',
+    value: 'ImageRail_Project'
+  });
+  if (projectName === null) return;
+
+  const cleanProjectName = cleanFilePrefix(projectName);
+  if (!cleanProjectName) {
+    showAppMessage('项目名称不能为空');
+    return;
+  }
+
+  const result = await window.imageRail.chooseProjectFolder({
+    projectName: cleanProjectName
+  });
 
   if (result) {
     setProject(result.projectPath, result.project);
@@ -407,9 +427,25 @@ function render() {
 function createTrackElement(track, trackIndex) {
   const trackElement = document.createElement('article');
   trackElement.className = 'track';
+  trackElement.dataset.trackId = track.id;
 
   const label = document.createElement('div');
   label.className = 'track-label';
+  label.draggable = true;
+  label.addEventListener('dragstart', (event) => {
+    if (event.target.closest('button, input, select, textarea')) {
+      event.preventDefault();
+      return;
+    }
+
+    state.draggedTrackId = track.id;
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('application/x-imagerail-track', track.id);
+  });
+  label.addEventListener('dragend', () => {
+    state.draggedTrackId = '';
+    document.querySelectorAll('.track.drag-over-track').forEach((item) => item.classList.remove('drag-over-track'));
+  });
 
   const trackName = document.createElement('strong');
   trackName.textContent = track.name;
@@ -442,6 +478,26 @@ function createTrackElement(track, trackIndex) {
   lane.className = 'track-lane';
   lane.dataset.trackId = track.id;
 
+  trackElement.addEventListener('dragover', (event) => {
+    if (!dataTransferHasType(event.dataTransfer, 'application/x-imagerail-track')) return;
+    event.preventDefault();
+    trackElement.classList.add('drag-over-track');
+  });
+
+  trackElement.addEventListener('dragleave', () => {
+    trackElement.classList.remove('drag-over-track');
+  });
+
+  trackElement.addEventListener('drop', (event) => {
+    const draggedTrackId = event.dataTransfer.getData('application/x-imagerail-track');
+    if (!draggedTrackId) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    trackElement.classList.remove('drag-over-track');
+    reorderTrack(draggedTrackId, track.id, event.offsetY > trackElement.clientHeight / 2);
+  });
+
   lane.addEventListener('dragover', (event) => {
     event.preventDefault();
     lane.classList.add('drag-over');
@@ -455,6 +511,7 @@ function createTrackElement(track, trackIndex) {
     event.preventDefault();
     event.stopPropagation();
     lane.classList.remove('drag-over');
+    if (handleImageReorderDrop(event, track.id)) return;
     await handleDrop(event, track.id);
   });
 
@@ -495,6 +552,41 @@ function createImageCard(trackId, image) {
   const card = document.createElement('div');
   card.className = `image-card${image.id === state.selectedImageId ? ' selected' : ''}`;
   card.dataset.imageId = image.id;
+  card.draggable = true;
+  card.addEventListener('dragstart', (event) => {
+    if (event.target.closest('textarea, select, .delete-button')) {
+      event.preventDefault();
+      return;
+    }
+
+    state.draggedImage = { trackId, imageId: image.id };
+    event.dataTransfer.effectAllowed = 'copyMove';
+    event.dataTransfer.setData('application/x-imagerail-image', JSON.stringify(state.draggedImage));
+  });
+  card.addEventListener('dragend', () => {
+    state.draggedImage = null;
+    document.querySelectorAll('.image-card.drag-over-image').forEach((item) => item.classList.remove('drag-over-image', 'drag-before', 'drag-after'));
+  });
+  card.addEventListener('dragover', (event) => {
+    if (!dataTransferHasType(event.dataTransfer, 'application/x-imagerail-image')) return;
+    event.preventDefault();
+    const insertAfter = event.offsetX > card.clientWidth / 2;
+    card.classList.toggle('drag-before', !insertAfter);
+    card.classList.toggle('drag-after', insertAfter);
+    card.classList.add('drag-over-image');
+  });
+  card.addEventListener('dragleave', () => {
+    card.classList.remove('drag-over-image', 'drag-before', 'drag-after');
+  });
+  card.addEventListener('drop', (event) => {
+    if (!event.dataTransfer.getData('application/x-imagerail-image')) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    const insertAfter = event.offsetX > card.clientWidth / 2;
+    card.classList.remove('drag-over-image', 'drag-before', 'drag-after');
+    handleImageReorderDrop(event, trackId, image.id, insertAfter);
+  });
 
   const thumbButton = document.createElement('button');
   thumbButton.type = 'button';
@@ -574,6 +666,69 @@ function findTrack(trackId) {
   return state.project?.tracks.find((item) => item.id === trackId) || null;
 }
 
+function dataTransferHasType(dataTransfer, type) {
+  return Array.from(dataTransfer?.types || []).includes(type);
+}
+
+function moveArrayItem(items, fromIndex, toIndex) {
+  if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return false;
+  const [item] = items.splice(fromIndex, 1);
+  items.splice(toIndex, 0, item);
+  return true;
+}
+
+function reorderTrack(sourceTrackId, targetTrackId, insertAfter = false) {
+  if (!state.project || !sourceTrackId || !targetTrackId || sourceTrackId === targetTrackId) return;
+
+  const tracks = state.project.tracks;
+  const sourceIndex = tracks.findIndex((track) => track.id === sourceTrackId);
+  let targetIndex = tracks.findIndex((track) => track.id === targetTrackId);
+  if (sourceIndex < 0 || targetIndex < 0) return;
+  if (insertAfter) targetIndex += 1;
+  if (sourceIndex < targetIndex) targetIndex -= 1;
+  if (!moveArrayItem(tracks, sourceIndex, targetIndex)) return;
+
+  saveProject({ silent: true });
+  render();
+}
+
+function getDraggedImageData(event) {
+  const raw = event.dataTransfer.getData('application/x-imagerail-image');
+  if (!raw) return null;
+
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    return null;
+  }
+}
+
+function handleImageReorderDrop(event, targetTrackId, targetImageId = '', insertAfter = true) {
+  const draggedImage = getDraggedImageData(event);
+  if (!draggedImage) return false;
+
+  const sourceTrack = findTrack(draggedImage.trackId);
+  const targetTrack = findTrack(targetTrackId);
+  if (!sourceTrack || !targetTrack || sourceTrack.id !== targetTrack.id) {
+    showAppMessage('当前版本先支持同一条轨道内的图片排序。跨轨道移动会在后续版本中加入。');
+    return true;
+  }
+
+  const sourceIndex = sourceTrack.images.findIndex((image) => image.id === draggedImage.imageId);
+  let targetIndex = targetImageId
+    ? targetTrack.images.findIndex((image) => image.id === targetImageId)
+    : targetTrack.images.length - 1;
+
+  if (sourceIndex < 0 || targetIndex < 0) return true;
+  if (insertAfter) targetIndex += 1;
+  if (sourceIndex < targetIndex) targetIndex -= 1;
+
+  if (!moveArrayItem(targetTrack.images, sourceIndex, targetIndex)) return true;
+  saveProject({ silent: true });
+  render();
+  return true;
+}
+
 function setupImageFileInteractions(thumbButton, imageElement, trackId, image) {
   const handleContextMenu = (event) => {
     event.preventDefault();
@@ -612,8 +767,11 @@ function showImageContextMenu(x, y, trackId, image) {
 
   state.contextMenuImage = image;
   state.contextMenuTrackId = trackId;
+  elements.renameImageButton.disabled = !image;
+  elements.copyPathButton.disabled = !image;
   elements.copyImageButton.disabled = !image;
   elements.revealImageButton.disabled = !image;
+  elements.deleteContextImageButton.disabled = !image;
   elements.pasteImageButton.disabled = true;
   elements.contextMenu.hidden = false;
   updatePasteButtonState();
@@ -703,6 +861,54 @@ async function copyContextMenuImage() {
   }
 }
 
+async function renameContextMenuImage() {
+  const image = state.contextMenuImage;
+  const trackId = state.contextMenuTrackId;
+  closeContextMenu();
+
+  if (!image || !trackId) return;
+
+  const currentName = String(image.fileName || '').replace(/\.[^.]+$/, '');
+  const newName = await askRenameValue({
+    title: '重命名图片',
+    description: '会同时重命名硬盘上的图片文件，并更新 ImageRail 里的图片记录。扩展名会自动保留。',
+    value: currentName
+  });
+  if (newName === null) return;
+
+  const cleanName = cleanFilePrefix(newName);
+  if (!cleanName) {
+    showAppMessage('图片名称不能为空');
+    return;
+  }
+
+  try {
+    const result = await window.imageRail.renameImageFile({
+      projectPath: state.projectPath,
+      project: state.project,
+      trackId,
+      imageId: image.id,
+      newImageName: cleanName
+    });
+    setProjectFromResult(result);
+  } catch (error) {
+    showAppMessage(getRenameErrorMessage(error, '重命名图片文件失败'));
+  }
+}
+
+async function copyContextMenuImagePath() {
+  const image = state.contextMenuImage;
+  closeContextMenu();
+
+  if (!image) return;
+
+  try {
+    await navigator.clipboard.writeText(fullPathFromRelativePath(image.relativePath));
+  } catch (error) {
+    showAppMessage(getErrorText(error, '复制文件路径失败'));
+  }
+}
+
 async function pasteContextMenuImage() {
   const trackId = state.contextMenuTrackId;
   closeContextMenu();
@@ -725,6 +931,28 @@ async function pasteContextMenuImage() {
     render();
   } catch (error) {
     showAppMessage(getErrorText(error, '粘贴图片失败'));
+  }
+}
+
+async function deleteContextMenuImage() {
+  const image = state.contextMenuImage;
+  const trackId = state.contextMenuTrackId;
+  closeContextMenu();
+
+  if (!image || !trackId) return;
+
+  try {
+    const result = await window.imageRail.deleteImageFile({
+      projectPath: state.projectPath,
+      project: state.project,
+      trackId,
+      imageId: image.id
+    });
+    if (state.selectedImageId === image.id) state.selectedImageId = '';
+    if (state.pinnedCompareImageId === image.id) state.pinnedCompareImageId = '';
+    setProjectFromResult(result);
+  } catch (error) {
+    showAppMessage(getRenameErrorMessage(error, '删除图片失败'));
   }
 }
 
@@ -1429,9 +1657,12 @@ elements.appMessageCloseButton.addEventListener('click', closeAppMessage);
 elements.appMessage.addEventListener('click', (event) => {
   if (event.target === elements.appMessage) closeAppMessage();
 });
+elements.renameImageButton.addEventListener('click', renameContextMenuImage);
+elements.copyPathButton.addEventListener('click', copyContextMenuImagePath);
 elements.copyImageButton.addEventListener('click', copyContextMenuImage);
 elements.pasteImageButton.addEventListener('click', pasteContextMenuImage);
 elements.revealImageButton.addEventListener('click', revealContextMenuImage);
+elements.deleteContextImageButton.addEventListener('click', deleteContextMenuImage);
 document.addEventListener('contextmenu', (event) => {
   event.preventDefault();
   closeContextMenu();

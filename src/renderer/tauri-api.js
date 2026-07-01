@@ -15,7 +15,9 @@
       if (convertFileSrc) return convertFileSrc(filePath);
       return encodeURI(`file:///${String(filePath).replace(/\\/g, '/')}`);
     },
-    chooseProjectFolder: () => invoke('choose_project_folder'),
+    chooseProjectFolder: (payload = {}) => invoke('choose_project_folder', {
+      projectName: payload.projectName || ''
+    }),
     listProjects: () => invoke('list_projects'),
     openExistingProject: (payload) => invoke('open_existing_project', {
       projectPath: payload.projectPath,
@@ -91,6 +93,13 @@
       project: payload.project,
       trackId: payload.trackId,
       newPrefix: payload.newPrefix
+    }),
+    renameImageFile: (payload) => invoke('rename_image_file_command', {
+      projectPath: payload.projectPath,
+      project: payload.project,
+      trackId: payload.trackId,
+      imageId: payload.imageId,
+      newImageName: payload.newImageName
     }),
     revealImageInFolder: (payload) => invoke('reveal_image_in_folder_command', {
       projectPath: payload.projectPath,

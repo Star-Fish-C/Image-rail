@@ -32,6 +32,7 @@ fn main() {
             add_image_raw_file_data_to_track_command,
             add_image_url_to_track_command,
             rename_track_prefix_command,
+            rename_image_file_command,
             reveal_image_in_folder_command,
             start_window_drag_command,
             minimize_window_command,
@@ -533,7 +534,7 @@ where
 }
 
 #[tauri::command]
-fn choose_project_folder() -> AppResult<Option<Value>> {
+fn choose_project_folder(project_name: String) -> AppResult<Option<Value>> {
     let Some(parent_folder) = rfd::FileDialog::new()
         .set_title("选择一个位置创建 ImageRail 项目")
         .pick_folder()
@@ -541,7 +542,9 @@ fn choose_project_folder() -> AppResult<Option<Value>> {
         return Ok(None);
     };
 
-    let project_folder = unique_child_folder(&parent_folder, "ImageRail_Project");
+    let clean_project_name =
+        sanitize_folder_name(&project_name).if_empty("ImageRail_Project".to_string());
+    let project_folder = unique_child_folder(&parent_folder, &clean_project_name);
     ensure_dir(&project_folder)?;
     let project_path = project_folder.to_string_lossy().to_string();
     let mut project = create_empty_project();
@@ -1072,6 +1075,70 @@ fn rename_track_prefix_command(
     }
 
     set_field(track, "prefix", json!(clean_prefix));
+    let saved_project = save_project(&project_path, working_project)?;
+    Ok(json!({ "projectPath": project_path, "project": saved_project }))
+}
+
+#[tauri::command]
+fn rename_image_file_command(
+    project_path: String,
+    project: Value,
+    track_id: String,
+    image_id: String,
+    new_image_name: String,
+) -> AppResult<Value> {
+    let requested_stem = Path::new(new_image_name.trim())
+        .file_stem()
+        .and_then(|item| item.to_str())
+        .unwrap_or(new_image_name.trim());
+    let clean_stem = sanitize_image_prefix(requested_stem);
+    if clean_stem.is_empty() {
+        return Err("图片名称不能为空".to_string());
+    }
+
+    let mut working_project = normalize_project(project);
+    let tracks = working_project
+        .get_mut("tracks")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "项目轨道数据不正确".to_string())?;
+    let track = tracks
+        .iter_mut()
+        .find(|track| string_field(track, "id") == track_id)
+        .ok_or_else(|| "没有找到目标轨道".to_string())?;
+    let images = track
+        .get_mut("images")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "轨道图片数据不正确".to_string())?;
+    let image_index = images
+        .iter()
+        .position(|image| string_field(image, "id") == image_id)
+        .ok_or_else(|| "没有找到目标图片".to_string())?;
+
+    let old_relative = string_field(&images[image_index], "relativePath");
+    let old_file_name = string_field(&images[image_index], "fileName");
+    let extension = image_extension_from_name(&old_file_name).if_empty(".png".to_string());
+    let old_path = project_scoped_file_path(&project_path, &old_relative)?;
+    let parent = Path::new(&old_relative).parent().unwrap_or(Path::new(""));
+    let new_file_name = format!("{}{}", clean_stem, extension);
+    let new_relative = parent
+        .join(&new_file_name)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let new_path = Path::new(&project_path).join(&new_relative);
+
+    if old_path != new_path && new_path.exists() {
+        return Err(format!("Already exists: {}", new_file_name));
+    }
+
+    if old_path != new_path {
+        fs::rename(&old_path, &new_path).map_err(|error| error.to_string())?;
+    }
+
+    if let Some(image) = images.get_mut(image_index) {
+        set_field(image, "fileName", json!(new_file_name));
+        set_field(image, "relativePath", json!(new_relative));
+    }
+
     let saved_project = save_project(&project_path, working_project)?;
     Ok(json!({ "projectPath": project_path, "project": saved_project }))
 }

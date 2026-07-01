@@ -302,6 +302,11 @@ body.resizing-compare {
   animation: rise-in 220ms ease both;
 }
 
+.track.drag-over-track {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(79, 124, 255, 0.16), var(--shadow);
+}
+
 .track-label {
   display: flex;
   flex-direction: column;
@@ -362,8 +367,8 @@ body.resizing-compare {
 }
 
 .image-card {
-  width: 180px;
-  min-width: 180px;
+  width: 210px;
+  min-width: 210px;
   border: 1px solid var(--line);
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.84);
@@ -382,7 +387,7 @@ body.resizing-compare {
   content: ">";
   position: absolute;
   right: -22px;
-  top: 58px;
+  top: 80px;
   color: var(--muted);
   font-weight: 700;
 }
@@ -392,10 +397,30 @@ body.resizing-compare {
   box-shadow: 0 0 0 3px rgba(79, 124, 255, 0.16), 0 18px 34px rgba(72, 84, 112, 0.13);
 }
 
+.image-card.drag-over-image::before {
+  content: '';
+  position: absolute;
+  top: -8px;
+  bottom: -8px;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 4px rgba(79, 124, 255, 0.12);
+  z-index: 3;
+}
+
+.image-card.drag-before::before {
+  left: -14px;
+}
+
+.image-card.drag-after::before {
+  right: -14px;
+}
+
 .thumb-button {
   display: block;
   width: 100%;
-  height: 104px;
+  height: 150px;
   padding: 0;
   border: 0;
   border-bottom: 1px solid var(--line);
@@ -417,39 +442,40 @@ body.resizing-compare {
 }
 
 .card-body {
-  padding: 10px;
+  padding: 8px;
 }
 
 .file-name {
   font-size: 12px;
   font-weight: 600;
-  line-height: 1.25;
-  word-break: break-all;
-  min-height: 30px;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .version {
-  margin-top: 4px;
+  margin-top: 2px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .card-body textarea {
   width: 100%;
-  height: 48px;
+  height: 34px;
   resize: none;
-  margin-top: 8px;
+  margin-top: 6px;
   border: 1px solid var(--line);
   border-radius: 10px;
-  padding: 6px;
+  padding: 5px 6px;
   font-size: 12px;
   background: rgba(255, 255, 255, 0.78);
 }
 
 .card-body select {
   width: 100%;
-  height: 32px;
-  margin-top: 8px;
+  height: 28px;
+  margin-top: 6px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.78);
@@ -457,15 +483,15 @@ body.resizing-compare {
 }
 
 .card-actions {
-  margin-top: 8px;
+  margin-top: 6px;
   display: flex;
   justify-content: flex-end;
   gap: 6px;
 }
 
 .delete-button {
-  min-height: 28px;
-  padding: 0 8px;
+  min-height: 26px;
+  padding: 0 7px;
   color: var(--danger);
   font-size: 12px;
 }
@@ -1116,8 +1142,10 @@ body.resizing-compare .compare-resizer {
 .context-menu {
   position: fixed;
   z-index: 80;
-  min-width: 160px;
-  padding: 6px;
+  width: max-content;
+  min-width: 128px;
+  max-width: 180px;
+  padding: 5px;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.92);
@@ -1131,14 +1159,18 @@ body.resizing-compare .compare-resizer {
 
 .context-menu button {
   width: 100%;
-  min-height: 34px;
+  min-height: 30px;
+  display: flex;
+  align-items: center;
   justify-content: flex-start;
   border: 0;
   border-radius: 8px;
+  padding: 0 10px;
   background: transparent;
   color: var(--text);
   box-shadow: none;
   text-align: left;
+  white-space: nowrap;
 }
 
 .context-menu button:hover:not(:disabled) {
@@ -1146,6 +1178,15 @@ body.resizing-compare .compare-resizer {
   color: var(--accent);
   transform: none;
   box-shadow: none;
+}
+
+.context-menu .danger-menu-item {
+  color: var(--danger);
+}
+
+.context-menu .danger-menu-item:hover:not(:disabled) {
+  background: rgba(180, 35, 24, 0.08);
+  color: var(--danger);
 }
 
 .context-menu button:disabled {
