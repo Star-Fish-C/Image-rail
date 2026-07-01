@@ -298,13 +298,30 @@ body.resizing-compare {
   background: var(--panel);
   box-shadow: var(--shadow);
   overflow: hidden;
+  position: relative;
   backdrop-filter: blur(18px);
   animation: rise-in 220ms ease both;
 }
 
-.track.drag-over-track {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(79, 124, 255, 0.16), var(--shadow);
+.track.drag-over-track::before {
+  content: '';
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 4px rgba(79, 124, 255, 0.12);
+  z-index: 5;
+  pointer-events: none;
+}
+
+.track.drag-before-track::before {
+  top: 0;
+}
+
+.track.drag-after-track::before {
+  bottom: 0;
 }
 
 .track-label {

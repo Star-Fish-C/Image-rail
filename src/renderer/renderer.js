@@ -24,7 +24,11 @@ const state = {
   contextMenuImage: null,
   contextMenuTrackId: '',
   draggedTrackId: '',
+  trackDropIndicatorElement: null,
+  trackDropIndicatorAfter: false,
   draggedImage: null,
+  imageDropIndicatorCard: null,
+  imageDropIndicatorAfter: false,
   activeCompareViewport: null,
   comparePanelWidth: Number(localStorage.getItem(COMPARE_WIDTH_STORAGE_KEY)) || 390
 };
@@ -444,7 +448,7 @@ function createTrackElement(track, trackIndex) {
   });
   label.addEventListener('dragend', () => {
     state.draggedTrackId = '';
-    document.querySelectorAll('.track.drag-over-track').forEach((item) => item.classList.remove('drag-over-track'));
+    clearTrackDropIndicator();
   });
 
   const trackName = document.createElement('strong');
@@ -481,11 +485,13 @@ function createTrackElement(track, trackIndex) {
   trackElement.addEventListener('dragover', (event) => {
     if (!dataTransferHasType(event.dataTransfer, 'application/x-imagerail-track')) return;
     event.preventDefault();
-    trackElement.classList.add('drag-over-track');
+    const rect = trackElement.getBoundingClientRect();
+    setTrackDropIndicator(trackElement, event.clientY > rect.top + rect.height / 2);
   });
 
-  trackElement.addEventListener('dragleave', () => {
-    trackElement.classList.remove('drag-over-track');
+  trackElement.addEventListener('dragleave', (event) => {
+    if (trackElement.contains(event.relatedTarget)) return;
+    clearTrackDropIndicator(trackElement);
   });
 
   trackElement.addEventListener('drop', (event) => {
@@ -494,23 +500,35 @@ function createTrackElement(track, trackIndex) {
 
     event.preventDefault();
     event.stopPropagation();
-    trackElement.classList.remove('drag-over-track');
-    reorderTrack(draggedTrackId, track.id, event.offsetY > trackElement.clientHeight / 2);
+    const insertAfter = state.trackDropIndicatorElement === trackElement
+      ? state.trackDropIndicatorAfter
+      : event.clientY > trackElement.getBoundingClientRect().top + trackElement.getBoundingClientRect().height / 2;
+    clearTrackDropIndicator();
+    reorderTrack(draggedTrackId, track.id, insertAfter);
   });
 
   lane.addEventListener('dragover', (event) => {
+    if (isImageReorderDrag(event.dataTransfer)) {
+      event.preventDefault();
+      return;
+    }
+
+    if (!isImageImportDrag(event.dataTransfer)) return;
     event.preventDefault();
-    lane.classList.add('drag-over');
+    setTrackLaneDropHighlight(lane);
   });
 
-  lane.addEventListener('dragleave', () => {
-    lane.classList.remove('drag-over');
+  lane.addEventListener('dragleave', (event) => {
+    if (lane.contains(event.relatedTarget)) return;
+    clearTrackLaneDropHighlights();
+    if (!lane.contains(event.relatedTarget)) clearImageDropIndicator();
   });
 
   lane.addEventListener('drop', async (event) => {
     event.preventDefault();
     event.stopPropagation();
-    lane.classList.remove('drag-over');
+    clearTrackLaneDropHighlights();
+    clearImageDropIndicator();
     if (handleImageReorderDrop(event, track.id)) return;
     await handleDrop(event, track.id);
   });
@@ -555,28 +573,25 @@ function createImageCard(trackId, image) {
   card.addEventListener('dragover', (event) => {
     if (!dataTransferHasType(event.dataTransfer, 'application/x-imagerail-image')) return;
     event.preventDefault();
-    const insertAfter = event.offsetX > card.clientWidth / 2;
-    card.classList.toggle('drag-before', !insertAfter);
-    card.classList.toggle('drag-after', insertAfter);
-    card.classList.add('drag-over-image');
-  });
-  card.addEventListener('dragleave', () => {
-    card.classList.remove('drag-over-image', 'drag-before', 'drag-after');
+    const rect = card.getBoundingClientRect();
+    const insertAfter = event.clientX > rect.left + rect.width / 2;
+    setImageDropIndicator(card, insertAfter);
   });
   card.addEventListener('drop', (event) => {
     if (!event.dataTransfer.getData('application/x-imagerail-image')) return;
 
     event.preventDefault();
     event.stopPropagation();
-    const insertAfter = event.offsetX > card.clientWidth / 2;
-    card.classList.remove('drag-over-image', 'drag-before', 'drag-after');
+    const rect = card.getBoundingClientRect();
+    const insertAfter = event.clientX > rect.left + rect.width / 2;
+    clearImageDropIndicator();
     handleImageReorderDrop(event, trackId, image.id, insertAfter);
   });
 
+  const imageUrl = fileUrlFromRelativePath(image.relativePath, imageCacheKey(image));
   const thumbButton = document.createElement('button');
   thumbButton.type = 'button';
   thumbButton.className = 'thumb-button';
-  thumbButton.draggable = true;
   thumbButton.addEventListener('click', (event) => {
     event.stopPropagation();
     selectImage(image.id);
@@ -584,9 +599,8 @@ function createImageCard(trackId, image) {
   });
 
   const img = document.createElement('img');
-  img.src = fileUrlFromRelativePath(image.relativePath, imageCacheKey(image));
+  img.src = imageUrl;
   img.alt = image.fileName;
-  img.draggable = true;
   thumbButton.appendChild(img);
   setupImageFileInteractions(thumbButton, img, trackId, image);
 
@@ -660,6 +674,29 @@ function dataTransferHasType(dataTransfer, type) {
   return Array.from(dataTransfer?.types || []).includes(type);
 }
 
+function isImageReorderDrag(dataTransfer) {
+  return dataTransferHasType(dataTransfer, 'application/x-imagerail-image');
+}
+
+function isImageImportDrag(dataTransfer) {
+  const types = Array.from(dataTransfer?.types || []);
+  return types.includes('Files')
+    || types.includes('text/uri-list')
+    || types.includes('text/html')
+    || types.includes('text/plain');
+}
+
+function setTrackLaneDropHighlight(lane) {
+  document.querySelectorAll('.track-lane.drag-over').forEach((item) => {
+    if (item !== lane) item.classList.remove('drag-over');
+  });
+  lane.classList.add('drag-over');
+}
+
+function clearTrackLaneDropHighlights() {
+  document.querySelectorAll('.track-lane.drag-over').forEach((item) => item.classList.remove('drag-over'));
+}
+
 function setupImageReorderInteractions(handle, trackId, image) {
   handle.draggable = true;
   handle.addEventListener('dragstart', (event) => {
@@ -675,8 +712,28 @@ function setupImageReorderInteractions(handle, trackId, image) {
 
   handle.addEventListener('dragend', () => {
     state.draggedImage = null;
-    document.querySelectorAll('.image-card.drag-over-image').forEach((item) => item.classList.remove('drag-over-image', 'drag-before', 'drag-after'));
+    clearImageDropIndicator();
+    clearTrackLaneDropHighlights();
   });
+}
+
+function setImageDropIndicator(card, insertAfter) {
+  if (state.imageDropIndicatorCard === card && state.imageDropIndicatorAfter === insertAfter) return;
+
+  clearImageDropIndicator();
+  state.imageDropIndicatorCard = card;
+  state.imageDropIndicatorAfter = insertAfter;
+  card.classList.toggle('drag-before', !insertAfter);
+  card.classList.toggle('drag-after', insertAfter);
+  card.classList.add('drag-over-image');
+}
+
+function clearImageDropIndicator() {
+  if (!state.imageDropIndicatorCard) return;
+
+  state.imageDropIndicatorCard.classList.remove('drag-over-image', 'drag-before', 'drag-after');
+  state.imageDropIndicatorCard = null;
+  state.imageDropIndicatorAfter = false;
 }
 
 function moveArrayItem(items, fromIndex, toIndex) {
@@ -699,6 +756,26 @@ function reorderTrack(sourceTrackId, targetTrackId, insertAfter = false) {
 
   saveProject({ silent: true });
   render();
+}
+
+function setTrackDropIndicator(trackElement, insertAfter = false) {
+  if (state.trackDropIndicatorElement === trackElement && state.trackDropIndicatorAfter === insertAfter) return;
+
+  clearTrackDropIndicator();
+  state.trackDropIndicatorElement = trackElement;
+  state.trackDropIndicatorAfter = insertAfter;
+  trackElement.classList.add('drag-over-track');
+  trackElement.classList.toggle('drag-before-track', !insertAfter);
+  trackElement.classList.toggle('drag-after-track', insertAfter);
+}
+
+function clearTrackDropIndicator(trackElement = null) {
+  if (trackElement && state.trackDropIndicatorElement !== trackElement) return;
+  if (!state.trackDropIndicatorElement) return;
+
+  state.trackDropIndicatorElement.classList.remove('drag-over-track', 'drag-before-track', 'drag-after-track');
+  state.trackDropIndicatorElement = null;
+  state.trackDropIndicatorAfter = false;
 }
 
 function getDraggedImageData(event) {
@@ -746,30 +823,15 @@ function setupImageFileInteractions(thumbButton, imageElement, trackId, image) {
   };
 
   const handleDragStart = (event) => {
-    event.stopPropagation();
-    if (!state.projectPath || !image.relativePath) {
-      event.preventDefault();
-      return;
-    }
+    if (!state.projectPath || !image.relativePath) return;
 
-    const fullPath = fullPathFromRelativePath(image.relativePath);
-    const fileUri = fileUriFromPath(fullPath);
+    const imageUrl = fileUrlFromRelativePath(image.relativePath);
     const mimeType = imageMimeFromName(image.fileName);
-
-    event.dataTransfer.effectAllowed = 'copy';
-    event.dataTransfer.setData('text/plain', fullPath);
-    event.dataTransfer.setData('text/uri-list', fileUri);
-    event.dataTransfer.setData('DownloadURL', `${mimeType}:${image.fileName}:${fileUri}`);
-    event.dataTransfer.setData('text/html', `<img src="${fileUri}" alt="${escapeHtml(image.fileName)}">`);
-
-    if (imageElement) {
-      event.dataTransfer.setDragImage(imageElement, imageElement.width / 2, imageElement.height / 2);
-    }
+    event.dataTransfer.setData('DownloadURL', `${mimeType}:${image.fileName}:${imageUrl}`);
   };
 
   thumbButton.addEventListener('contextmenu', handleContextMenu);
   imageElement.addEventListener('contextmenu', handleContextMenu);
-  thumbButton.addEventListener('dragstart', handleDragStart);
   imageElement.addEventListener('dragstart', handleDragStart);
 }
 
@@ -1683,7 +1745,22 @@ document.addEventListener('pointerdown', (event) => {
     closeContextMenu();
   }
 });
-window.addEventListener('blur', closeContextMenu);
+document.addEventListener('dragend', () => {
+  clearTrackDropIndicator();
+  clearTrackLaneDropHighlights();
+  clearImageDropIndicator();
+});
+document.addEventListener('drop', () => {
+  clearTrackDropIndicator();
+  clearTrackLaneDropHighlights();
+  clearImageDropIndicator();
+});
+window.addEventListener('blur', () => {
+  closeContextMenu();
+  clearTrackDropIndicator();
+  clearTrackLaneDropHighlights();
+  clearImageDropIndicator();
+});
 window.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && !elements.contextMenu.hidden) {
     closeContextMenu();
