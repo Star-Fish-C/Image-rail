@@ -362,7 +362,6 @@ body.resizing-compare {
   overflow-x: auto;
   padding: 18px;
   position: relative;
-  scroll-behavior: smooth;
 }
 
 .track-lane.drag-over {

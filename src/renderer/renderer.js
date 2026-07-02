@@ -29,6 +29,8 @@ const state = {
   draggedImage: null,
   imageDropIndicatorCard: null,
   imageDropIndicatorAfter: false,
+  trackScrollPositions: {},
+  tracksToScrollEnd: new Set(),
   activeCompareViewport: null,
   comparePanelWidth: Number(localStorage.getItem(COMPARE_WIDTH_STORAGE_KEY)) || 390
 };
@@ -404,6 +406,8 @@ async function deleteProjectFromList(project, button) {
 }
 
 function render() {
+  rememberTrackScrollPositions();
+
   const hasProject = Boolean(state.projectPath && state.project);
   elements.projectPathText.textContent = hasProject
     ? `${state.project.projectName || getFolderName(state.projectPath)} · ${state.projectPath}`
@@ -425,7 +429,33 @@ function render() {
     elements.tracks.appendChild(createTrackElement(track, trackIndex));
   });
 
+  restoreTrackScrollPositions();
   renderComparePanel();
+}
+
+function rememberTrackScrollPositions() {
+  document.querySelectorAll('.track-lane[data-track-id]').forEach((lane) => {
+    state.trackScrollPositions[lane.dataset.trackId] = lane.scrollLeft;
+  });
+}
+
+function restoreTrackScrollPositions() {
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      document.querySelectorAll('.track-lane[data-track-id]').forEach((lane) => {
+        const trackId = lane.dataset.trackId;
+
+        if (state.tracksToScrollEnd.has(trackId)) {
+          lane.scrollLeft = lane.scrollWidth;
+          state.trackScrollPositions[trackId] = lane.scrollLeft;
+          state.tracksToScrollEnd.delete(trackId);
+          return;
+        }
+
+        lane.scrollLeft = state.trackScrollPositions[trackId] || 0;
+      });
+    });
+  });
 }
 
 function createTrackElement(track, trackIndex) {
@@ -543,7 +573,12 @@ function createTrackElement(track, trackIndex) {
     event.preventDefault();
     event.stopPropagation();
     lane.scrollLeft += horizontalDelta;
+    state.trackScrollPositions[track.id] = lane.scrollLeft;
   }, { passive: false });
+
+  lane.addEventListener('scroll', () => {
+    state.trackScrollPositions[track.id] = lane.scrollLeft;
+  });
 
   lane.addEventListener('contextmenu', (event) => {
     event.preventDefault();
@@ -1072,6 +1107,15 @@ function resetInlineDeleteConfirmations(exceptButton) {
   });
 }
 
+function cancelInlineDeleteConfirmations() {
+  if (!state.pendingDeleteImageId && !state.pendingDeleteTrackId && !state.pendingDeleteProjectPath) return;
+
+  state.pendingDeleteImageId = '';
+  state.pendingDeleteTrackId = '';
+  state.pendingDeleteProjectPath = '';
+  resetInlineDeleteConfirmations();
+}
+
 function markInlineDeleteConfirmation(button, type, id) {
   resetInlineDeleteConfirmations(button);
   state.pendingDeleteImageId = type === 'image' ? id : '';
@@ -1084,6 +1128,7 @@ function markInlineDeleteConfirmation(button, type, id) {
 async function handleDrop(event, trackId) {
   if (!state.projectPath || !state.project) return;
 
+  rememberTrackScrollPositions();
   const files = Array.from(event.dataTransfer.files || []);
   let importedCount = 0;
 
@@ -1159,6 +1204,8 @@ async function handleDrop(event, trackId) {
 
   if (importedCount === 0) {
     showAppMessage('没有识别到可导入的图片。请拖入 png、jpg、jpeg、webp、gif、bmp 或 avif 图片。');
+  } else {
+    state.tracksToScrollEnd.add(trackId);
   }
 
   render();
@@ -1312,6 +1359,7 @@ async function deleteImageFile(trackId, imageId, button) {
   }
 
   try {
+    rememberTrackScrollPositions();
     const result = await window.imageRail.deleteImageFile({
       projectPath: state.projectPath,
       project: state.project,
@@ -1321,7 +1369,8 @@ async function deleteImageFile(trackId, imageId, button) {
     state.pendingDeleteImageId = '';
     state.pendingDeleteTrackId = '';
     state.pendingDeleteProjectPath = '';
-    setProjectFromResult(result);
+    state.projectPath = result.projectPath || state.projectPath;
+    state.project = result.project;
     if (state.selectedImageId === imageId) state.selectedImageId = '';
     if (state.pinnedCompareImageId === imageId) state.pinnedCompareImageId = '';
     render();
@@ -1743,6 +1792,10 @@ document.addEventListener('contextmenu', (event) => {
 document.addEventListener('pointerdown', (event) => {
   if (!elements.contextMenu.hidden && !event.target.closest('.context-menu')) {
     closeContextMenu();
+  }
+
+  if (!event.target.closest('.confirm-delete')) {
+    cancelInlineDeleteConfirmations();
   }
 });
 document.addEventListener('dragend', () => {
