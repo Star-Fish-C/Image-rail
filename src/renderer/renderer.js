@@ -27,19 +27,23 @@ const state = {
   trackDropIndicatorElement: null,
   trackDropIndicatorAfter: false,
   draggedImage: null,
+  draggedExportImage: false,
   imageDropIndicatorCard: null,
   imageDropIndicatorAfter: false,
   trackScrollPositions: {},
   tracksToScrollEnd: new Set(),
+  undoEntry: null,
+  undoInProgress: false,
+  savePromise: Promise.resolve(),
   activeCompareViewport: null,
   comparePanelWidth: Number(localStorage.getItem(COMPARE_WIDTH_STORAGE_KEY)) || 390
 };
 
 const elements = {
   projectPathText: document.querySelector('#projectPathText'),
+  undoButton: document.querySelector('#undoButton'),
   chooseProjectButton: document.querySelector('#chooseProjectButton'),
   newTrackButton: document.querySelector('#newTrackButton'),
-  saveProjectButton: document.querySelector('#saveProjectButton'),
   emptyState: document.querySelector('#emptyState'),
   tracks: document.querySelector('#tracks'),
   compareContent: document.querySelector('#compareContent'),
@@ -184,7 +188,63 @@ function setProject(projectPath, project) {
   state.pendingDeleteImageId = '';
   state.pendingDeleteTrackId = '';
   state.pendingDeleteProjectPath = '';
+  state.undoEntry = null;
   render();
+}
+
+function cloneProject(project = state.project) {
+  return project ? JSON.parse(JSON.stringify(project)) : null;
+}
+
+function captureUndo(label) {
+  if (!state.project || !state.projectPath) return null;
+  return { label, projectPath: state.projectPath, project: cloneProject() };
+}
+
+function commitUndo(entry) {
+  if (!entry) return;
+  state.undoEntry = entry;
+  updateUndoButton();
+}
+
+function updateUndoButton() {
+  const available = Boolean(state.undoEntry && state.project && !state.undoInProgress);
+  elements.undoButton.disabled = !available;
+  elements.undoButton.title = available
+    ? `撤回：${state.undoEntry.label}（Ctrl+Z）`
+    : '没有可以撤回的操作（Ctrl+Z）';
+}
+
+async function undoLastAction() {
+  const entry = state.undoEntry;
+  if (!entry || !state.project || state.undoInProgress) return;
+  if (entry.projectPath !== state.projectPath) {
+    state.undoEntry = null;
+    updateUndoButton();
+    return;
+  }
+
+  state.undoInProgress = true;
+  updateUndoButton();
+  try {
+    await state.savePromise.catch(() => {});
+    const result = await window.imageRail.restoreProject({
+      projectPath: state.projectPath,
+      currentProject: state.project,
+      previousProject: entry.project
+    });
+    state.undoEntry = null;
+    state.projectPath = result.projectPath || state.projectPath;
+    state.project = result.project;
+    state.selectedImageId = findImageById(state.selectedImageId) ? state.selectedImageId : '';
+    state.pinnedCompareImageId = findImageById(state.pinnedCompareImageId) ? state.pinnedCompareImageId : '';
+    render();
+  } catch (error) {
+    showAppMessage(getErrorText(error, `撤回“${entry.label}”失败`));
+  } finally {
+    state.undoInProgress = false;
+    updateUndoButton();
+  }
 }
 
 function setProjectFromResult(result) {
@@ -413,7 +473,7 @@ function render() {
     ? `${state.project.projectName || getFolderName(state.projectPath)} · ${state.projectPath}`
     : '尚未选择项目文件夹';
   elements.newTrackButton.disabled = !hasProject;
-  elements.saveProjectButton.disabled = !hasProject;
+  updateUndoButton();
   elements.pinCompareButton.disabled = !hasProject || !state.selectedImageId;
   updateCompareZoomButtons();
   elements.pinCompareButton.textContent = state.pinnedCompareImageId ? '取消固定' : '固定对比';
@@ -659,7 +719,15 @@ function createImageCard(trackId, image) {
   note.placeholder = '备注';
   note.value = image.note || '';
   stopCardClick(note);
+  let noteUndo = null;
+  note.addEventListener('focus', () => {
+    noteUndo = captureUndo('编辑图片备注');
+  });
   note.addEventListener('input', () => {
+    if (noteUndo) {
+      commitUndo(noteUndo);
+      noteUndo = null;
+    }
     updateImage(trackId, image.id, { note: note.value });
   });
 
@@ -673,7 +741,9 @@ function createImageCard(trackId, image) {
   status.value = image.status || 'pending';
   stopCardClick(status);
   status.addEventListener('change', () => {
+    const undo = captureUndo('修改图片状态');
     updateImage(trackId, image.id, { status: status.value });
+    commitUndo(undo);
   });
 
   const actions = document.createElement('div');
@@ -732,6 +802,18 @@ function clearTrackLaneDropHighlights() {
   document.querySelectorAll('.track-lane.drag-over').forEach((item) => item.classList.remove('drag-over'));
 }
 
+function showImageDragCancelZone() {
+  elements.comparePanel.classList.add('image-drag-active');
+}
+
+function clearImageDragCancelZone() {
+  elements.comparePanel.classList.remove('image-drag-active', 'cancel-drop-active');
+}
+
+function isAnyImageDragActive() {
+  return Boolean(state.draggedImage || state.draggedExportImage);
+}
+
 function setupImageReorderInteractions(handle, trackId, image) {
   handle.draggable = true;
   handle.addEventListener('dragstart', (event) => {
@@ -743,12 +825,14 @@ function setupImageReorderInteractions(handle, trackId, image) {
     state.draggedImage = { trackId, imageId: image.id };
     event.dataTransfer.effectAllowed = 'move';
     event.dataTransfer.setData('application/x-imagerail-image', JSON.stringify(state.draggedImage));
+    showImageDragCancelZone();
   });
 
   handle.addEventListener('dragend', () => {
     state.draggedImage = null;
     clearImageDropIndicator();
     clearTrackLaneDropHighlights();
+    clearImageDragCancelZone();
   });
 }
 
@@ -787,9 +871,11 @@ function reorderTrack(sourceTrackId, targetTrackId, insertAfter = false) {
   if (sourceIndex < 0 || targetIndex < 0) return;
   if (insertAfter) targetIndex += 1;
   if (sourceIndex < targetIndex) targetIndex -= 1;
+  const undo = captureUndo('调整轨道顺序');
   if (!moveArrayItem(tracks, sourceIndex, targetIndex)) return;
 
   saveProject({ silent: true });
+  commitUndo(undo);
   render();
 }
 
@@ -844,8 +930,10 @@ function handleImageReorderDrop(event, targetTrackId, targetImageId = '', insert
   if (insertAfter) targetIndex += 1;
   if (sourceIndex < targetIndex) targetIndex -= 1;
 
+  const undo = captureUndo('调整图片顺序');
   if (!moveArrayItem(targetTrack.images, sourceIndex, targetIndex)) return true;
   saveProject({ silent: true });
+  commitUndo(undo);
   render();
   return true;
 }
@@ -860,6 +948,8 @@ function setupImageFileInteractions(thumbButton, imageElement, trackId, image) {
   const handleDragStart = (event) => {
     if (!state.projectPath || !image.relativePath) return;
 
+    state.draggedExportImage = true;
+    showImageDragCancelZone();
     const imageUrl = fileUrlFromRelativePath(image.relativePath);
     const mimeType = imageMimeFromName(image.fileName);
     event.dataTransfer.setData('DownloadURL', `${mimeType}:${image.fileName}:${imageUrl}`);
@@ -868,6 +958,10 @@ function setupImageFileInteractions(thumbButton, imageElement, trackId, image) {
   thumbButton.addEventListener('contextmenu', handleContextMenu);
   imageElement.addEventListener('contextmenu', handleContextMenu);
   imageElement.addEventListener('dragstart', handleDragStart);
+  imageElement.addEventListener('dragend', () => {
+    state.draggedExportImage = false;
+    clearImageDragCancelZone();
+  });
 }
 
 function showImageContextMenu(x, y, trackId, image) {
@@ -990,6 +1084,7 @@ async function renameContextMenuImage() {
     return;
   }
 
+  const undo = captureUndo('重命名图片');
   try {
     const result = await window.imageRail.renameImageFile({
       projectPath: state.projectPath,
@@ -999,6 +1094,7 @@ async function renameContextMenuImage() {
       newImageName: cleanName
     });
     setProjectFromResult(result);
+    commitUndo(undo);
   } catch (error) {
     showAppMessage(getRenameErrorMessage(error, '重命名图片文件失败'));
   }
@@ -1023,6 +1119,7 @@ async function pasteContextMenuImage() {
 
   if (!trackId) return;
 
+  const undo = captureUndo('粘贴图片');
   try {
     const clipboardImage = await readClipboardImage();
     const extension = fileExtensionFromMime(clipboardImage.mimeType);
@@ -1036,6 +1133,7 @@ async function pasteContextMenuImage() {
     });
 
     state.project = result.project;
+    commitUndo(undo);
     render();
   } catch (error) {
     showAppMessage(getErrorText(error, '粘贴图片失败'));
@@ -1049,6 +1147,7 @@ async function deleteContextMenuImage() {
 
   if (!image || !trackId) return;
 
+  const undo = captureUndo('删除图片');
   try {
     const result = await window.imageRail.deleteImageFile({
       projectPath: state.projectPath,
@@ -1059,6 +1158,7 @@ async function deleteContextMenuImage() {
     if (state.selectedImageId === image.id) state.selectedImageId = '';
     if (state.pinnedCompareImageId === image.id) state.pinnedCompareImageId = '';
     setProjectFromResult(result);
+    commitUndo(undo);
   } catch (error) {
     showAppMessage(getRenameErrorMessage(error, '删除图片失败'));
   }
@@ -1129,6 +1229,7 @@ async function handleDrop(event, trackId) {
   if (!state.projectPath || !state.project) return;
 
   rememberTrackScrollPositions();
+  const undo = captureUndo('导入图片');
   const files = Array.from(event.dataTransfer.files || []);
   let importedCount = 0;
 
@@ -1206,6 +1307,7 @@ async function handleDrop(event, trackId) {
     showAppMessage('没有识别到可导入的图片。请拖入 png、jpg、jpeg、webp、gif、bmp 或 avif 图片。');
   } else {
     state.tracksToScrollEnd.add(trackId);
+    commitUndo(undo);
   }
 
   render();
@@ -1229,6 +1331,7 @@ function getDraggedImageUrl(dataTransfer) {
 function createTrack() {
   if (!state.project) return;
 
+  const undo = captureUndo('新建轨道');
   const index = state.project.tracks.length;
   const letter = getTrackLetter(index);
   state.project.tracks.push({
@@ -1241,6 +1344,7 @@ function createTrack() {
   });
 
   saveProject();
+  commitUndo(undo);
   render();
 }
 
@@ -1261,6 +1365,7 @@ async function renameTrack(trackId) {
     return;
   }
 
+  const undo = captureUndo('重命名轨道');
   try {
     const result = await window.imageRail.renameTrackFolder({
       projectPath: state.projectPath,
@@ -1269,6 +1374,7 @@ async function renameTrack(trackId) {
       newTrackName: cleanName
     });
     setProjectFromResult(result);
+    commitUndo(undo);
   } catch (error) {
     showAppMessage(getRenameErrorMessage(error, '重命名轨道文件夹失败'));
   }
@@ -1292,6 +1398,7 @@ async function renameTrackPrefix(trackId) {
     return;
   }
 
+  const undo = captureUndo('重命名图片前缀');
   try {
     const result = await window.imageRail.renameTrackPrefix({
       projectPath: state.projectPath,
@@ -1300,6 +1407,7 @@ async function renameTrackPrefix(trackId) {
       newPrefix: cleanPrefix
     });
     setProjectFromResult(result);
+    commitUndo(undo);
   } catch (error) {
     showAppMessage(getRenameErrorMessage(error, '重命名图片失败'));
   }
@@ -1358,6 +1466,7 @@ async function deleteImageFile(trackId, imageId, button) {
     return;
   }
 
+  const undo = captureUndo('删除图片');
   try {
     rememberTrackScrollPositions();
     const result = await window.imageRail.deleteImageFile({
@@ -1371,6 +1480,7 @@ async function deleteImageFile(trackId, imageId, button) {
     state.pendingDeleteProjectPath = '';
     state.projectPath = result.projectPath || state.projectPath;
     state.project = result.project;
+    commitUndo(undo);
     if (state.selectedImageId === imageId) state.selectedImageId = '';
     if (state.pinnedCompareImageId === imageId) state.pinnedCompareImageId = '';
     render();
@@ -1393,6 +1503,7 @@ async function removeTrackRecord(trackId, button) {
   }
 
   const removedImageIds = new Set(track.images.map((image) => image.id));
+  const undo = captureUndo('删除轨道');
   try {
     if (removedImageIds.has(state.selectedImageId)) {
       state.selectedImageId = '';
@@ -1411,6 +1522,7 @@ async function removeTrackRecord(trackId, button) {
     state.pendingDeleteTrackId = '';
     state.pendingDeleteProjectPath = '';
     setProjectFromResult(result);
+    commitUndo(undo);
   } catch (error) {
     state.pendingDeleteImageId = '';
     state.pendingDeleteTrackId = '';
@@ -1423,13 +1535,19 @@ async function removeTrackRecord(trackId, button) {
 async function saveProject(options = {}) {
   if (!state.projectPath || !state.project) return;
 
+  const projectPath = state.projectPath;
+  const project = cloneProject();
+  const saveTask = state.savePromise
+    .catch(() => {})
+    .then(() => window.imageRail.saveProject({ projectPath, project }));
+  state.savePromise = saveTask;
+
   try {
-    const result = await window.imageRail.saveProject({
-      projectPath: state.projectPath,
-      project: state.project
-    });
-    state.project = result.project;
-    if (!options.silent) render();
+    const result = await saveTask;
+    if (state.savePromise === saveTask && state.projectPath === projectPath) {
+      state.project = result.project;
+      if (!options.silent) render();
+    }
   } catch (error) {
     showAppMessage(getErrorText(error, '保存失败'));
   }
@@ -1756,7 +1874,7 @@ elements.projectModal.addEventListener('click', (event) => {
   if (event.target === elements.projectModal) closeProjectModal();
 });
 elements.newTrackButton.addEventListener('click', createTrack);
-elements.saveProjectButton.addEventListener('click', () => saveProject());
+elements.undoButton.addEventListener('click', undoLastAction);
 elements.pinCompareButton.addEventListener('click', togglePinnedCompareImage);
 elements.zoomInButton.addEventListener('click', () => changeActiveCompareZoom(COMPARE_ZOOM_STEP));
 elements.zoomOutButton.addEventListener('click', () => changeActiveCompareZoom(-COMPARE_ZOOM_STEP));
@@ -1785,6 +1903,30 @@ elements.copyImageButton.addEventListener('click', copyContextMenuImage);
 elements.pasteImageButton.addEventListener('click', pasteContextMenuImage);
 elements.revealImageButton.addEventListener('click', revealContextMenuImage);
 elements.deleteContextImageButton.addEventListener('click', deleteContextMenuImage);
+elements.comparePanel.addEventListener('dragenter', (event) => {
+  if (!isAnyImageDragActive()) return;
+  event.preventDefault();
+  elements.comparePanel.classList.add('cancel-drop-active');
+});
+elements.comparePanel.addEventListener('dragover', (event) => {
+  if (!isAnyImageDragActive()) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'move';
+});
+elements.comparePanel.addEventListener('dragleave', (event) => {
+  if (event.relatedTarget && elements.comparePanel.contains(event.relatedTarget)) return;
+  elements.comparePanel.classList.remove('cancel-drop-active');
+});
+elements.comparePanel.addEventListener('drop', (event) => {
+  if (!isAnyImageDragActive()) return;
+  event.preventDefault();
+  event.stopPropagation();
+  state.draggedImage = null;
+  state.draggedExportImage = false;
+  clearImageDropIndicator();
+  clearTrackLaneDropHighlights();
+  clearImageDragCancelZone();
+});
 document.addEventListener('contextmenu', (event) => {
   event.preventDefault();
   closeContextMenu();
@@ -1799,22 +1941,34 @@ document.addEventListener('pointerdown', (event) => {
   }
 });
 document.addEventListener('dragend', () => {
+  state.draggedExportImage = false;
   clearTrackDropIndicator();
   clearTrackLaneDropHighlights();
   clearImageDropIndicator();
+  clearImageDragCancelZone();
 });
 document.addEventListener('drop', () => {
+  state.draggedExportImage = false;
   clearTrackDropIndicator();
   clearTrackLaneDropHighlights();
   clearImageDropIndicator();
+  clearImageDragCancelZone();
 });
 window.addEventListener('blur', () => {
+  state.draggedExportImage = false;
   closeContextMenu();
   clearTrackDropIndicator();
   clearTrackLaneDropHighlights();
   clearImageDropIndicator();
+  clearImageDragCancelZone();
 });
 window.addEventListener('keydown', (event) => {
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'z') {
+    event.preventDefault();
+    undoLastAction();
+    return;
+  }
+
   if (event.key === 'Escape' && !elements.contextMenu.hidden) {
     closeContextMenu();
   }

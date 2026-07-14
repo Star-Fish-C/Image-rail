@@ -15,9 +15,9 @@
           <p id="projectPathText">尚未选择项目文件夹</p>
         </div>
         <div class="toolbar">
+          <button id="undoButton" class="icon-button" type="button" title="撤回上一步（Ctrl+Z）" aria-label="撤回上一步" disabled>↶</button>
           <button id="chooseProjectButton" type="button">选择项目</button>
           <button id="newTrackButton" type="button" disabled>新建轨道</button>
-          <button id="saveProjectButton" type="button" disabled>保存项目</button>
         </div>
         <div class="window-controls">
           <button id="minimizeWindowButton" type="button" aria-label="最小化">-</button>
@@ -37,6 +37,7 @@
 
         <div id="compareResizer" class="compare-resizer" aria-label="调整右侧查看区域宽度"></div>
         <aside class="compare-panel">
+          <div class="drag-cancel-message" aria-hidden="true"><span></span></div>
           <div class="compare-header">
             <div>
               <span>预览 / 对比</span>

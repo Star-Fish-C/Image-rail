@@ -303,6 +303,14 @@ body.resizing-compare {
   animation: rise-in 220ms ease both;
 }
 
+.toolbar .icon-button {
+  width: 36px;
+  min-width: 36px;
+  padding: 0;
+  font-size: 22px;
+  line-height: 1;
+}
+
 .track.drag-over-track::before {
   content: '';
   position: absolute;
@@ -572,6 +580,83 @@ body.resizing-compare .compare-resizer {
   scrollbar-width: none;
   box-shadow: var(--shadow-soft);
   backdrop-filter: blur(18px);
+  transition: background 180ms ease, border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+}
+
+.compare-panel.image-drag-active {
+  border-color: rgba(225, 82, 93, 0.48);
+  background: rgba(255, 239, 241, 0.78);
+  box-shadow: inset 0 0 0 1px rgba(225, 82, 93, 0.12), 0 14px 34px rgba(190, 55, 68, 0.12);
+}
+
+.compare-panel.image-drag-active::before {
+  content: "";
+  position: absolute;
+  inset: 12px;
+  z-index: 20;
+  border: 2px dashed rgba(208, 62, 75, 0.5);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.34);
+  pointer-events: none;
+  transition: inset 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.drag-cancel-message {
+  position: sticky;
+  top: calc(50% - 24px);
+  z-index: 30;
+  display: flex;
+  height: 0;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(8px) scale(0.96);
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.drag-cancel-message span {
+  display: block;
+  max-width: calc(100% - 48px);
+  padding: 12px 18px;
+  border: 1px solid rgba(208, 62, 75, 0.24);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.9);
+  color: #b42332;
+  font-size: 14px;
+  font-weight: 700;
+  text-align: center;
+  box-shadow: 0 12px 30px rgba(164, 36, 49, 0.14);
+  transition: transform 160ms ease, background 160ms ease, color 160ms ease;
+}
+
+.drag-cancel-message span::before {
+  content: "拖到此处取消移动";
+}
+
+.compare-panel.image-drag-active .drag-cancel-message {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.compare-panel.image-drag-active.cancel-drop-active {
+  border-color: rgba(208, 62, 75, 0.75);
+  background: rgba(255, 225, 229, 0.88);
+}
+
+.compare-panel.image-drag-active.cancel-drop-active::before {
+  inset: 9px;
+  border-color: rgba(190, 42, 56, 0.78);
+  background: rgba(255, 244, 245, 0.52);
+}
+
+.compare-panel.image-drag-active.cancel-drop-active .drag-cancel-message span {
+  color: #9f1d2c;
+  transform: scale(1.04);
+}
+
+.compare-panel.image-drag-active.cancel-drop-active .drag-cancel-message span::before {
+  content: "松开以取消移动";
 }
 
 .compare-panel::-webkit-scrollbar {

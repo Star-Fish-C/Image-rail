@@ -30,6 +30,11 @@
       projectPath: payload.projectPath,
       project: payload.project
     }),
+    restoreProject: (payload) => invoke('restore_project_command', {
+      projectPath: payload.projectPath,
+      currentProject: payload.currentProject,
+      previousProject: payload.previousProject
+    }),
     renameProject: (payload) => invoke('rename_project_command', {
       projectPath: payload.projectPath,
       project: payload.project,
