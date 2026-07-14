@@ -478,19 +478,93 @@ function render() {
   updateCompareZoomButtons();
   elements.pinCompareButton.textContent = state.pinnedCompareImageId ? '取消固定' : '固定对比';
   elements.emptyState.hidden = hasProject && state.project.tracks.length > 0;
-  elements.tracks.innerHTML = '';
 
   if (!hasProject) {
+    elements.tracks.replaceChildren();
     renderComparePanel();
     return;
   }
 
-  state.project.tracks.forEach((track, trackIndex) => {
-    elements.tracks.appendChild(createTrackElement(track, trackIndex));
-  });
-
+  reconcileTracks();
   restoreTrackScrollPositions();
   renderComparePanel();
+}
+
+function imageCardRenderKey(trackId, image) {
+  return [
+    trackId,
+    image.id,
+    image.fileName,
+    image.relativePath,
+    image.version,
+    image.note,
+    image.status,
+    image.createdAt
+  ].join('|');
+}
+
+function reconcileTrackImages(trackElement, track) {
+  const lane = trackElement.querySelector('.track-lane');
+  if (!lane) return;
+
+  const desiredImageIds = new Set(track.images.map((image) => image.id));
+  lane.querySelectorAll('.image-card[data-image-id]').forEach((card) => {
+    if (!desiredImageIds.has(card.dataset.imageId)) card.remove();
+  });
+
+  const hint = lane.querySelector('.drop-hint');
+  if (track.images.length === 0) {
+    if (!hint) {
+      const nextHint = document.createElement('div');
+      nextHint.className = 'drop-hint';
+      nextHint.textContent = '把图片拖到这里';
+      lane.appendChild(nextHint);
+    }
+    return;
+  }
+
+  hint?.remove();
+  track.images.forEach((image, imageIndex) => {
+    const key = imageCardRenderKey(track.id, image);
+    let card = lane.querySelector(`.image-card[data-image-id="${CSS.escape(image.id)}"]`);
+    if (!card || card.dataset.renderKey !== key) {
+      const replacement = createImageCard(track.id, image);
+      if (card) card.replaceWith(replacement);
+      card = replacement;
+    }
+    card.classList.toggle('selected', image.id === state.selectedImageId);
+    const cardAtTargetIndex = lane.children[imageIndex] || null;
+    if (card !== cardAtTargetIndex) lane.insertBefore(card, cardAtTargetIndex);
+  });
+}
+
+function reconcileTracks() {
+  const desiredTrackIds = new Set(state.project.tracks.map((track) => track.id));
+  elements.tracks.querySelectorAll('.track[data-track-id]').forEach((trackElement) => {
+    if (!desiredTrackIds.has(trackElement.dataset.trackId)) trackElement.remove();
+  });
+
+  state.project.tracks.forEach((track, trackIndex) => {
+    let trackElement = elements.tracks.querySelector(`.track[data-track-id="${CSS.escape(track.id)}"]`);
+    if (!trackElement) {
+      trackElement = createTrackElement(track, trackIndex);
+    } else {
+      const label = trackElement.querySelector('.track-label');
+      const name = label?.querySelector('strong');
+      const meta = label?.querySelector('span');
+      const deleteButton = label?.querySelector('.danger-button');
+      if (name) name.textContent = track.name;
+      if (meta) {
+        meta.textContent = `${track.images.length} 张图片 · 文件夹 ${track.folderName || `track_${track.letter || getTrackLetter(trackIndex)}`} · 前缀 ${track.prefix || track.letter || getTrackLetter(trackIndex)}`;
+      }
+      if (deleteButton) setInlineConfirmState(deleteButton, state.pendingDeleteTrackId === track.id);
+      reconcileTrackImages(trackElement, track);
+    }
+    const trackAtTargetIndex = elements.tracks.children[trackIndex] || null;
+    if (trackElement !== trackAtTargetIndex) {
+      elements.tracks.insertBefore(trackElement, trackAtTargetIndex);
+    }
+  });
 }
 
 function rememberTrackScrollPositions() {
@@ -665,6 +739,7 @@ function createImageCard(trackId, image) {
   const card = document.createElement('div');
   card.className = `image-card${image.id === state.selectedImageId ? ' selected' : ''}`;
   card.dataset.imageId = image.id;
+  card.dataset.renderKey = imageCardRenderKey(trackId, image);
   card.addEventListener('dragover', (event) => {
     if (!dataTransferHasType(event.dataTransfer, 'application/x-imagerail-image')) return;
     event.preventDefault();
@@ -1450,6 +1525,8 @@ function updateImage(trackId, imageId, patch) {
   if (!image) return;
 
   Object.assign(image, patch);
+  const card = elements.tracks.querySelector(`.image-card[data-image-id="${CSS.escape(imageId)}"]`);
+  if (card) card.dataset.renderKey = imageCardRenderKey(trackId, image);
   saveProject({ silent: true });
   renderComparePanel();
 }
@@ -1611,11 +1688,34 @@ function changeActiveCompareZoom(delta) {
   changeViewportZoom(viewport, delta);
 }
 
+function compareItemSignature(item) {
+  if (!item) return '';
+  return [
+    item.track.id,
+    item.track.name,
+    item.image.id,
+    item.image.fileName,
+    item.image.relativePath,
+    item.image.version,
+    item.image.status,
+    imageCacheKey(item.image)
+  ].join('|');
+}
+
 function renderComparePanel() {
   const selected = findSelectedImage();
   const pinned = findImageById(state.pinnedCompareImageId);
+  const signature = selected
+    ? `${compareItemSignature(pinned)}::${compareItemSignature(selected)}`
+    : `empty::${state.projectPath ? 'project' : 'no-project'}`;
 
-  elements.compareContent.innerHTML = '';
+  if (elements.compareContent.dataset.signature === signature) {
+    updateCompareZoomButtons();
+    return;
+  }
+
+  elements.compareContent.dataset.signature = signature;
+  elements.compareContent.replaceChildren();
 
   if (!selected) {
     elements.compareContent.className = 'compare-empty';
