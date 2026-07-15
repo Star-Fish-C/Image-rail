@@ -582,14 +582,35 @@ function restoreTrackScrollPositions() {
         if (state.tracksToScrollEnd.has(trackId)) {
           lane.scrollLeft = lane.scrollWidth;
           state.trackScrollPositions[trackId] = lane.scrollLeft;
-          state.tracksToScrollEnd.delete(trackId);
+          updateTrackNavigationButtons(lane);
+          window.setTimeout(() => {
+            if (!state.tracksToScrollEnd.has(trackId)) return;
+            const currentLane = elements.tracks.querySelector(`.track-lane[data-track-id="${CSS.escape(trackId)}"]`);
+            if (currentLane) {
+              currentLane.scrollLeft = currentLane.scrollWidth;
+              state.trackScrollPositions[trackId] = currentLane.scrollLeft;
+              updateTrackNavigationButtons(currentLane);
+            }
+            state.tracksToScrollEnd.delete(trackId);
+          }, 120);
           return;
         }
 
         lane.scrollLeft = state.trackScrollPositions[trackId] || 0;
+        updateTrackNavigationButtons(lane);
       });
     });
   });
+}
+
+function updateTrackNavigationButtons(lane) {
+  if (!lane) return;
+  const trackElement = lane.closest('.track');
+  const leftButton = trackElement?.querySelector('[data-track-scroll="left"]');
+  const rightButton = trackElement?.querySelector('[data-track-scroll="right"]');
+  const maxScrollLeft = Math.max(0, lane.scrollWidth - lane.clientWidth);
+  if (leftButton) leftButton.disabled = lane.scrollLeft <= 1;
+  if (rightButton) rightButton.disabled = lane.scrollLeft >= maxScrollLeft - 1;
 }
 
 function createTrackElement(track, trackIndex) {
@@ -640,11 +661,37 @@ function createTrackElement(track, trackIndex) {
   setInlineConfirmState(deleteTrackButton, state.pendingDeleteTrackId === track.id);
   deleteTrackButton.addEventListener('click', () => removeTrackRecord(track.id, deleteTrackButton));
 
-  label.append(trackName, trackMeta, renameTrackButton, renamePrefixButton, deleteTrackButton);
-
   const lane = document.createElement('div');
   lane.className = 'track-lane';
   lane.dataset.trackId = track.id;
+
+  const trackNavigation = document.createElement('div');
+  trackNavigation.className = 'track-navigation';
+
+  const scrollLeftButton = document.createElement('button');
+  scrollLeftButton.type = 'button';
+  scrollLeftButton.className = 'small-button track-navigation-button';
+  scrollLeftButton.dataset.trackScroll = 'left';
+  scrollLeftButton.textContent = '←';
+  scrollLeftButton.title = '移动到轨道最左侧';
+  scrollLeftButton.setAttribute('aria-label', '移动到轨道最左侧');
+  scrollLeftButton.addEventListener('click', () => {
+    lane.scrollTo({ left: 0, behavior: 'smooth' });
+  });
+
+  const scrollRightButton = document.createElement('button');
+  scrollRightButton.type = 'button';
+  scrollRightButton.className = 'small-button track-navigation-button';
+  scrollRightButton.dataset.trackScroll = 'right';
+  scrollRightButton.textContent = '→';
+  scrollRightButton.title = '移动到轨道最右侧';
+  scrollRightButton.setAttribute('aria-label', '移动到轨道最右侧');
+  scrollRightButton.addEventListener('click', () => {
+    lane.scrollTo({ left: lane.scrollWidth, behavior: 'smooth' });
+  });
+
+  trackNavigation.append(scrollLeftButton, scrollRightButton);
+  label.append(trackName, trackMeta, renameTrackButton, renamePrefixButton, deleteTrackButton, trackNavigation);
 
   trackElement.addEventListener('dragover', (event) => {
     if (!dataTransferHasType(event.dataTransfer, 'application/x-imagerail-track')) return;
@@ -712,6 +759,7 @@ function createTrackElement(track, trackIndex) {
 
   lane.addEventListener('scroll', () => {
     state.trackScrollPositions[track.id] = lane.scrollLeft;
+    updateTrackNavigationButtons(lane);
   });
 
   lane.addEventListener('contextmenu', (event) => {
@@ -1208,6 +1256,7 @@ async function pasteContextMenuImage() {
     });
 
     state.project = result.project;
+    state.tracksToScrollEnd.add(trackId);
     commitUndo(undo);
     render();
   } catch (error) {
