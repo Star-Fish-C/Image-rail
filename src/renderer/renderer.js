@@ -563,15 +563,18 @@ function reconcileTracks() {
     if (!trackElement) {
       trackElement = createTrackElement(track, trackIndex);
     } else {
+      trackElement.classList.toggle('collapsed', Boolean(track.collapsed));
       const label = trackElement.querySelector('.track-label');
       const name = label?.querySelector('strong');
       const meta = label?.querySelector('span');
       const deleteButton = label?.querySelector('.danger-button');
+      const collapseButton = label?.querySelector('.track-collapse-button');
       if (name) name.textContent = track.name;
       if (meta) {
         meta.textContent = `${track.images.length} 张图片 · 文件夹 ${track.folderName || `track_${track.letter || getTrackLetter(trackIndex)}`} · 前缀 ${track.prefix || track.letter || getTrackLetter(trackIndex)}`;
       }
       if (deleteButton) setInlineConfirmState(deleteButton, state.pendingDeleteTrackId === track.id);
+      if (collapseButton) updateTrackCollapseButton(collapseButton, Boolean(track.collapsed));
       reconcileTrackImages(trackElement, track);
     }
     const trackAtTargetIndex = elements.tracks.children[trackIndex] || null;
@@ -627,9 +630,26 @@ function updateTrackNavigationButtons(lane) {
   if (rightButton) rightButton.disabled = lane.scrollLeft >= maxScrollLeft - 1;
 }
 
+function updateTrackCollapseButton(button, collapsed) {
+  button.textContent = collapsed ? '▾' : '▴';
+  button.title = collapsed ? '展开轨道' : '折叠轨道';
+  button.setAttribute('aria-label', button.title);
+}
+
+function toggleTrackCollapsed(trackId) {
+  const track = findTrack(trackId);
+  if (!track) return;
+
+  const undo = captureUndo(track.collapsed ? '展开轨道' : '折叠轨道');
+  track.collapsed = !track.collapsed;
+  saveProject({ silent: true });
+  commitUndo(undo);
+  render();
+}
+
 function createTrackElement(track, trackIndex) {
   const trackElement = document.createElement('article');
-  trackElement.className = 'track';
+  trackElement.className = `track${track.collapsed ? ' collapsed' : ''}`;
   trackElement.dataset.trackId = track.id;
 
   const label = document.createElement('div');
@@ -652,6 +672,16 @@ function createTrackElement(track, trackIndex) {
 
   const trackName = document.createElement('strong');
   trackName.textContent = track.name;
+
+  const collapseTrackButton = document.createElement('button');
+  collapseTrackButton.type = 'button';
+  collapseTrackButton.className = 'track-collapse-button';
+  updateTrackCollapseButton(collapseTrackButton, Boolean(track.collapsed));
+  collapseTrackButton.addEventListener('click', () => toggleTrackCollapsed(track.id));
+
+  const trackTitleRow = document.createElement('div');
+  trackTitleRow.className = 'track-title-row';
+  trackTitleRow.append(trackName, collapseTrackButton);
 
   const trackMeta = document.createElement('span');
   trackMeta.textContent = `${track.images.length} 张图片 · 文件夹 ${track.folderName || `track_${track.letter || getTrackLetter(trackIndex)}`} · 前缀 ${track.prefix || track.letter || getTrackLetter(trackIndex)}`;
@@ -705,7 +735,7 @@ function createTrackElement(track, trackIndex) {
   });
 
   trackNavigation.append(scrollLeftButton, scrollRightButton);
-  label.append(trackName, trackMeta, renameTrackButton, renamePrefixButton, deleteTrackButton, trackNavigation);
+  label.append(trackTitleRow, trackMeta, renameTrackButton, renamePrefixButton, deleteTrackButton, trackNavigation);
 
   trackElement.addEventListener('dragover', (event) => {
     if (!dataTransferHasType(event.dataTransfer, 'application/x-imagerail-track')) return;
@@ -1478,6 +1508,7 @@ function createTrack() {
     prefix: letter,
     folderName: `track_${letter}`,
     name: `轨道 ${letter}`,
+    collapsed: false,
     images: []
   });
 

@@ -389,6 +389,47 @@ body.resizing-compare {
   font-size: 18px;
 }
 
+.track-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.track-title-row strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.track-collapse-button {
+  width: 30px;
+  min-width: 30px;
+  min-height: 30px;
+  padding: 0;
+  border: 1px solid rgba(79, 124, 255, 0.3);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--accent);
+  font-size: 15px;
+  line-height: 1;
+  box-shadow: 0 4px 12px rgba(79, 124, 255, 0.12);
+}
+
+.track-collapse-button:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  transform: scale(1.08);
+  box-shadow: 0 7px 16px rgba(79, 124, 255, 0.2);
+}
+
+.track-collapse-button:active:not(:disabled) {
+  transform: scale(0.94);
+  box-shadow: inset 0 2px 4px rgba(54, 94, 232, 0.16);
+}
+
 .track-label span {
   color: var(--muted);
   font-size: 13px;
@@ -418,6 +459,31 @@ body.resizing-compare {
 
 .danger-button {
   color: var(--danger);
+}
+
+.track.collapsed {
+  display: block;
+  min-height: 0;
+}
+
+.track.collapsed .track-label {
+  display: grid;
+  grid-template-columns: minmax(160px, max-content) minmax(0, 1fr);
+  align-items: center;
+  justify-content: initial;
+  min-height: 64px;
+  padding: 12px 18px;
+  border-right: 0;
+}
+
+.track.collapsed .track-title-row {
+  justify-content: flex-start;
+}
+
+.track.collapsed .track-label > button,
+.track.collapsed .track-navigation,
+.track.collapsed .track-lane {
+  display: none;
 }
 
 .track-lane {
