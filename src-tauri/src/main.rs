@@ -29,7 +29,6 @@ fn main() {
             delete_track_folder_command,
             rename_track_folder_command,
             add_image_to_track_command,
-            add_image_file_data_to_track_command,
             add_image_raw_file_data_to_track_command,
             add_image_url_to_track_command,
             rename_track_prefix_command,
@@ -1130,26 +1129,6 @@ fn add_image_to_track_command(
                 .map(|_| ())
                 .map_err(|error| error.to_string())
         },
-    )
-}
-
-#[tauri::command]
-fn add_image_file_data_to_track_command(
-    project_path: String,
-    project: Value,
-    track_id: String,
-    file_name: String,
-    mime_type: String,
-    file_data: Vec<u8>,
-) -> AppResult<Value> {
-    let extension =
-        image_extension_from_name(&file_name).if_empty(image_extension_from_mime(&mime_type));
-    add_image_with_writer(
-        &project_path,
-        project,
-        &track_id,
-        &extension,
-        |destination| fs::write(destination, &file_data).map_err(|error| error.to_string()),
     )
 }
 

@@ -18,9 +18,7 @@ const state = {
   selectedImageId: '',
   pinnedCompareImageId: '',
   renameResolver: null,
-  pendingDeleteImageId: '',
-  pendingDeleteTrackId: '',
-  pendingDeleteProjectPath: '',
+  pendingDelete: { type: '', id: '' },
   contextMenuImage: null,
   contextMenuTrackId: '',
   draggedTrackId: '',
@@ -163,10 +161,6 @@ function fullPathFromRelativePath(relativePath) {
   return `${normalizedProjectPath}/${String(relativePath || '').replace(/\\/g, '/')}`;
 }
 
-function fileUriFromPath(filePath) {
-  return encodeURI(`file:///${String(filePath || '').replace(/\\/g, '/')}`);
-}
-
 function imageMimeFromName(fileName) {
   const extension = String(fileName || '').split('.').pop().toLowerCase();
   if (extension === 'jpg' || extension === 'jpeg') return 'image/jpeg';
@@ -188,9 +182,7 @@ function setProject(projectPath, project) {
   state.project.imagesFolderName = state.project.imagesFolderName || '';
   state.selectedImageId = '';
   state.pinnedCompareImageId = '';
-  state.pendingDeleteImageId = '';
-  state.pendingDeleteTrackId = '';
-  state.pendingDeleteProjectPath = '';
+  clearPendingDelete();
   state.undoEntry = null;
   render();
 }
@@ -337,7 +329,7 @@ function createProjectListItem(project) {
   const renameProjectButton = createProjectActionButton('重命名项目', () => renameProjectFromList(project));
   const rebindProjectButton = createProjectActionButton('重新绑定', () => rebindProjectFromList(project), 'warning-button');
   const deleteProjectButton = createProjectActionButton('删除项目', () => deleteProjectFromList(project, deleteProjectButton), 'danger-button');
-  setInlineConfirmState(deleteProjectButton, state.pendingDeleteProjectPath === project.projectPath);
+  setInlineConfirmState(deleteProjectButton, isPendingDelete('project', project.projectPath));
 
   actions.append(renameProjectButton);
   if (isMissing) actions.append(rebindProjectButton);
@@ -440,7 +432,7 @@ async function renameProjectFromList(project) {
 }
 
 async function deleteProjectFromList(project, button) {
-  if (state.pendingDeleteProjectPath !== project.projectPath) {
+  if (!isPendingDelete('project', project.projectPath)) {
     markInlineDeleteConfirmation(button, 'project', project.projectPath);
     return;
   }
@@ -459,10 +451,10 @@ async function deleteProjectFromList(project, button) {
       render();
     }
 
-    state.pendingDeleteProjectPath = '';
+    clearPendingDelete();
     await renderProjectList();
   } catch (error) {
-    state.pendingDeleteProjectPath = '';
+    clearPendingDelete();
     resetInlineDeleteConfirmations();
     showAppMessage(getErrorText(error, '删除项目记录失败'));
   }
@@ -573,7 +565,7 @@ function reconcileTracks() {
       if (meta) {
         meta.textContent = `${track.images.length} 张图片 · 文件夹 ${track.folderName || `track_${track.letter || getTrackLetter(trackIndex)}`} · 前缀 ${track.prefix || track.letter || getTrackLetter(trackIndex)}`;
       }
-      if (deleteButton) setInlineConfirmState(deleteButton, state.pendingDeleteTrackId === track.id);
+      if (deleteButton) setInlineConfirmState(deleteButton, isPendingDelete('track', track.id));
       if (collapseButton) updateTrackCollapseButton(collapseButton, Boolean(track.collapsed));
       reconcileTrackImages(trackElement, track);
     }
@@ -702,7 +694,7 @@ function createTrackElement(track, trackIndex) {
   deleteTrackButton.type = 'button';
   deleteTrackButton.className = 'small-button danger-button';
   deleteTrackButton.textContent = '删除轨道';
-  setInlineConfirmState(deleteTrackButton, state.pendingDeleteTrackId === track.id);
+  setInlineConfirmState(deleteTrackButton, isPendingDelete('track', track.id));
   deleteTrackButton.addEventListener('click', () => removeTrackRecord(track.id, deleteTrackButton));
 
   const lane = document.createElement('div');
@@ -920,7 +912,7 @@ function createImageCard(trackId, image) {
   deleteButton.type = 'button';
   deleteButton.className = 'delete-button';
   deleteButton.textContent = '删除图片';
-  setInlineConfirmState(deleteButton, state.pendingDeleteImageId === image.id);
+  setInlineConfirmState(deleteButton, isPendingDelete('image', image.id));
   deleteButton.addEventListener('click', async (event) => {
     event.stopPropagation();
     await deleteImageFile(trackId, image.id, deleteButton);
@@ -1357,40 +1349,59 @@ function stopCardClick(element) {
 }
 
 function setInlineConfirmState(button, isConfirming) {
-  button.textContent = isConfirming ? '确定' : button.textContent;
+  button.dataset.defaultLabel ||= button.textContent;
+  button.textContent = isConfirming ? '确定' : button.dataset.defaultLabel;
   button.classList.toggle('confirm-delete', isConfirming);
 }
 
 function resetInlineDeleteConfirmations(exceptButton) {
   document.querySelectorAll('.confirm-delete').forEach((button) => {
     if (button === exceptButton) return;
-    button.classList.remove('confirm-delete');
-    if (button.classList.contains('delete-button')) {
-      button.textContent = '删除图片';
-    } else if (button.classList.contains('project-action-button')) {
-      button.textContent = '删除项目';
-    } else {
-      button.textContent = '删除轨道';
-    }
+    setInlineConfirmState(button, false);
   });
 }
 
-function cancelInlineDeleteConfirmations() {
-  if (!state.pendingDeleteImageId && !state.pendingDeleteTrackId && !state.pendingDeleteProjectPath) return;
+function isPendingDelete(type, id) {
+  return state.pendingDelete.type === type && state.pendingDelete.id === id;
+}
 
-  state.pendingDeleteImageId = '';
-  state.pendingDeleteTrackId = '';
-  state.pendingDeleteProjectPath = '';
+function clearPendingDelete() {
+  state.pendingDelete.type = '';
+  state.pendingDelete.id = '';
+}
+
+function cancelInlineDeleteConfirmations() {
+  if (!state.pendingDelete.type) return;
+
+  clearPendingDelete();
   resetInlineDeleteConfirmations();
 }
 
 function markInlineDeleteConfirmation(button, type, id) {
   resetInlineDeleteConfirmations(button);
-  state.pendingDeleteImageId = type === 'image' ? id : '';
-  state.pendingDeleteTrackId = type === 'track' ? id : '';
-  state.pendingDeleteProjectPath = type === 'project' ? id : '';
-  button.textContent = '确定';
-  button.classList.add('confirm-delete');
+  state.pendingDelete.type = type;
+  state.pendingDelete.id = id;
+  setInlineConfirmState(button, true);
+}
+
+async function importImageFileToTrack(file, trackId) {
+  const result = file.path
+    ? await window.imageRail.addImageToTrack({
+        projectPath: state.projectPath,
+        project: state.project,
+        trackId,
+        sourcePath: file.path
+      })
+    : await window.imageRail.addImageRawFileDataToTrack({
+        projectPath: state.projectPath,
+        project: state.project,
+        trackId,
+        fileName: file.name,
+        mimeType: file.type,
+        fileData: await file.arrayBuffer()
+      });
+
+  state.project = result.project;
 }
 
 async function handleDrop(event, trackId) {
@@ -1403,23 +1414,7 @@ async function handleDrop(event, trackId) {
 
   for (const file of files) {
     try {
-      const result = file.path
-        ? await window.imageRail.addImageToTrack({
-            projectPath: state.projectPath,
-            project: state.project,
-            trackId,
-            sourcePath: file.path
-          })
-        : await window.imageRail.addImageRawFileDataToTrack({
-            projectPath: state.projectPath,
-            project: state.project,
-            trackId,
-            fileName: file.name,
-            mimeType: file.type,
-            fileData: await file.arrayBuffer()
-          });
-
-      state.project = result.project;
+      await importImageFileToTrack(file, trackId);
       importedCount += 1;
     } catch (error) {
       showAppMessage(getErrorText(error, '导入图片失败'));
@@ -1435,16 +1430,7 @@ async function handleDrop(event, trackId) {
       if (!file) continue;
 
       try {
-        const result = await window.imageRail.addImageRawFileDataToTrack({
-          projectPath: state.projectPath,
-          project: state.project,
-          trackId,
-          fileName: file.name,
-          mimeType: file.type,
-          fileData: await file.arrayBuffer()
-        });
-
-        state.project = result.project;
+        await importImageFileToTrack(file, trackId);
         importedCount += 1;
       } catch (error) {
         showAppMessage(getErrorText(error, '导入图片失败'));
@@ -1632,7 +1618,7 @@ async function deleteImageFile(trackId, imageId, button) {
   const image = track.images.find((item) => item.id === imageId);
   if (!image) return;
 
-  if (state.pendingDeleteImageId !== imageId) {
+  if (!isPendingDelete('image', imageId)) {
     markInlineDeleteConfirmation(button, 'image', imageId);
     return;
   }
@@ -1646,9 +1632,7 @@ async function deleteImageFile(trackId, imageId, button) {
       trackId,
       imageId
     });
-    state.pendingDeleteImageId = '';
-    state.pendingDeleteTrackId = '';
-    state.pendingDeleteProjectPath = '';
+    clearPendingDelete();
     state.projectPath = result.projectPath || state.projectPath;
     state.project = result.project;
     commitUndo(undo);
@@ -1656,9 +1640,7 @@ async function deleteImageFile(trackId, imageId, button) {
     if (state.pinnedCompareImageId === imageId) state.pinnedCompareImageId = '';
     render();
   } catch (error) {
-    state.pendingDeleteImageId = '';
-    state.pendingDeleteTrackId = '';
-    state.pendingDeleteProjectPath = '';
+    clearPendingDelete();
     resetInlineDeleteConfirmations();
     showAppMessage(getRenameErrorMessage(error, '删除图片失败'));
   }
@@ -1668,7 +1650,7 @@ async function removeTrackRecord(trackId, button) {
   const track = findTrack(trackId);
   if (!track) return;
 
-  if (state.pendingDeleteTrackId !== trackId) {
+  if (!isPendingDelete('track', trackId)) {
     markInlineDeleteConfirmation(button, 'track', trackId);
     return;
   }
@@ -1689,15 +1671,11 @@ async function removeTrackRecord(trackId, button) {
       project: state.project,
       trackId
     });
-    state.pendingDeleteImageId = '';
-    state.pendingDeleteTrackId = '';
-    state.pendingDeleteProjectPath = '';
+    clearPendingDelete();
     setProjectFromResult(result);
     commitUndo(undo);
   } catch (error) {
-    state.pendingDeleteImageId = '';
-    state.pendingDeleteTrackId = '';
-    state.pendingDeleteProjectPath = '';
+    clearPendingDelete();
     resetInlineDeleteConfirmations();
     showAppMessage(getRenameErrorMessage(error, '删除轨道文件夹失败'));
   }
@@ -1741,9 +1719,7 @@ function findImageById(imageId) {
 
 function selectImage(imageId) {
   state.selectedImageId = imageId;
-  state.pendingDeleteImageId = '';
-  state.pendingDeleteTrackId = '';
-  state.pendingDeleteProjectPath = '';
+  clearPendingDelete();
   resetInlineDeleteConfirmations();
 }
 

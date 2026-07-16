@@ -66,14 +66,6 @@
       trackId: payload.trackId,
       sourcePath: payload.sourcePath
     }),
-    addImageFileDataToTrack: (payload) => invoke('add_image_file_data_to_track_command', {
-      projectPath: payload.projectPath,
-      project: payload.project,
-      trackId: payload.trackId,
-      fileName: payload.fileName,
-      mimeType: payload.mimeType,
-      fileData: Array.from(new Uint8Array(payload.fileData))
-    }),
     addImageRawFileDataToTrack: (payload) => invoke(
       'add_image_raw_file_data_to_track_command',
       new Uint8Array(payload.fileData),
