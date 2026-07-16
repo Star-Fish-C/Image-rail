@@ -11,7 +11,13 @@
       <div class="window-drag-strip" data-tauri-drag-region></div>
       <header class="topbar" data-tauri-drag-region>
         <div class="title-area" data-tauri-drag-region>
-          <h1>ImageRail / 画轨</h1>
+          <div class="title-heading" data-tauri-drag-region>
+            <h1>ImageRail / 画轨</h1>
+            <div class="board-navigation" aria-label="轨道画板上下导航">
+              <button id="scrollBoardTopButton" type="button" title="回到第一条轨道" aria-label="回到第一条轨道" disabled>↑</button>
+              <button id="scrollBoardBottomButton" type="button" title="前往最后一条轨道" aria-label="前往最后一条轨道" disabled>↓</button>
+            </div>
+          </div>
           <p id="projectPathText">尚未选择项目文件夹</p>
         </div>
         <div class="toolbar">

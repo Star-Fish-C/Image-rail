@@ -177,10 +177,51 @@ button:disabled {
   flex: 1;
 }
 
+.title-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
 .topbar h1 {
-  margin: 0 0 4px;
+  margin: 0;
   font-size: 22px;
   line-height: 1.2;
+}
+
+.board-navigation {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.68);
+  box-shadow: 0 4px 14px rgba(72, 84, 112, 0.08);
+}
+
+.board-navigation button {
+  width: 30px;
+  min-width: 30px;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.board-navigation button + button {
+  border-left: 1px solid var(--line);
+}
+
+.board-navigation button:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--line);
+  color: var(--accent-strong);
+  box-shadow: none;
 }
 
 .topbar p {

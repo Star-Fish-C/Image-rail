@@ -44,6 +44,9 @@ const elements = {
   undoButton: document.querySelector('#undoButton'),
   chooseProjectButton: document.querySelector('#chooseProjectButton'),
   newTrackButton: document.querySelector('#newTrackButton'),
+  scrollBoardTopButton: document.querySelector('#scrollBoardTopButton'),
+  scrollBoardBottomButton: document.querySelector('#scrollBoardBottomButton'),
+  railBoard: document.querySelector('.rail-board'),
   emptyState: document.querySelector('#emptyState'),
   tracks: document.querySelector('#tracks'),
   compareContent: document.querySelector('#compareContent'),
@@ -482,12 +485,23 @@ function render() {
   if (!hasProject) {
     elements.tracks.replaceChildren();
     renderComparePanel();
+    updateBoardNavigationButtons();
     return;
   }
 
   reconcileTracks();
   restoreTrackScrollPositions();
   renderComparePanel();
+  requestAnimationFrame(updateBoardNavigationButtons);
+}
+
+function updateBoardNavigationButtons() {
+  const board = elements.railBoard;
+  if (!board) return;
+  const hasProject = Boolean(state.projectPath && state.project);
+  const maxScrollTop = Math.max(0, board.scrollHeight - board.clientHeight);
+  elements.scrollBoardTopButton.disabled = !hasProject || board.scrollTop <= 1;
+  elements.scrollBoardBottomButton.disabled = !hasProject || board.scrollTop >= maxScrollTop - 1;
 }
 
 function imageCardRenderKey(trackId, image) {
@@ -2023,6 +2037,14 @@ elements.projectModal.addEventListener('click', (event) => {
   if (event.target === elements.projectModal) closeProjectModal();
 });
 elements.newTrackButton.addEventListener('click', createTrack);
+elements.scrollBoardTopButton.addEventListener('click', () => {
+  elements.railBoard.scrollTo({ top: 0, behavior: 'smooth' });
+});
+elements.scrollBoardBottomButton.addEventListener('click', () => {
+  elements.railBoard.scrollTo({ top: elements.railBoard.scrollHeight, behavior: 'smooth' });
+});
+elements.railBoard.addEventListener('scroll', updateBoardNavigationButtons);
+window.addEventListener('resize', updateBoardNavigationButtons);
 elements.undoButton.addEventListener('click', undoLastAction);
 elements.pinCompareButton.addEventListener('click', togglePinnedCompareImage);
 elements.zoomInButton.addEventListener('click', () => changeActiveCompareZoom(COMPARE_ZOOM_STEP));
