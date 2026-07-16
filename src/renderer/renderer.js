@@ -17,6 +17,7 @@ const state = {
   project: null,
   selectedImageId: '',
   pinnedCompareImageId: '',
+  compareMode: 'single',
   renameResolver: null,
   pendingDelete: { type: '', id: '' },
   contextMenuImage: null,
@@ -48,9 +49,13 @@ const elements = {
   emptyState: document.querySelector('#emptyState'),
   tracks: document.querySelector('#tracks'),
   compareContent: document.querySelector('#compareContent'),
+  compareDetails: document.querySelector('#compareDetails'),
+  compareStatusText: document.querySelector('#compareStatusText'),
+  compareFileText: document.querySelector('#compareFileText'),
+  compareFileMeta: document.querySelector('#compareFileMeta'),
   comparePanel: document.querySelector('.compare-panel'),
   compareResizer: document.querySelector('#compareResizer'),
-  pinCompareButton: document.querySelector('#pinCompareButton'),
+  compareViewButton: document.querySelector('#compareViewButton'),
   zoomInButton: document.querySelector('#zoomInButton'),
   zoomOutButton: document.querySelector('#zoomOutButton'),
   previewModal: document.querySelector('#previewModal'),
@@ -128,7 +133,7 @@ function activateCompareViewport(viewport) {
 function updateCompareZoomButtons() {
   const viewport = getActiveCompareViewport();
   const zoom = getViewportZoom(viewport);
-  const disabled = !state.selectedImageId || !viewport;
+  const disabled = state.compareMode === 'compare' || !state.selectedImageId || !viewport;
   if (elements.zoomInButton) elements.zoomInButton.disabled = disabled || zoom >= COMPARE_ZOOM_MAX;
   if (elements.zoomOutButton) elements.zoomOutButton.disabled = disabled || zoom <= COMPARE_ZOOM_MIN;
 }
@@ -182,6 +187,7 @@ function setProject(projectPath, project) {
   state.project.imagesFolderName = state.project.imagesFolderName || '';
   state.selectedImageId = '';
   state.pinnedCompareImageId = '';
+  state.compareMode = 'single';
   clearPendingDelete();
   state.undoEntry = null;
   render();
@@ -448,6 +454,7 @@ async function deleteProjectFromList(project, button) {
       state.project = null;
       state.selectedImageId = '';
       state.pinnedCompareImageId = '';
+      state.compareMode = 'single';
       render();
     }
 
@@ -469,9 +476,8 @@ function render() {
     : '尚未选择项目文件夹';
   elements.newTrackButton.disabled = !hasProject;
   updateUndoButton();
-  elements.pinCompareButton.disabled = !hasProject || !state.selectedImageId;
+  updateCompareModeButtons();
   updateCompareZoomButtons();
-  elements.pinCompareButton.textContent = state.pinnedCompareImageId ? '取消固定' : '固定对比';
   elements.emptyState.hidden = hasProject && state.project.tracks.length > 0;
 
   if (!hasProject) {
@@ -1735,14 +1741,30 @@ function refreshSelectedImageView() {
   }
 
   const hasProject = Boolean(state.projectPath && state.project);
-  elements.pinCompareButton.disabled = !hasProject || !state.selectedImageId;
+  updateCompareModeButtons(hasProject);
   renderComparePanel();
 }
 
-function togglePinnedCompareImage() {
-  if (!state.selectedImageId) return;
+function updateCompareModeButtons(hasProject = Boolean(state.projectPath && state.project)) {
+  const isCompareMode = state.compareMode === 'compare';
 
-  state.pinnedCompareImageId = state.pinnedCompareImageId ? '' : state.selectedImageId;
+  elements.compareViewButton.disabled = !hasProject || (!state.selectedImageId && !isCompareMode);
+  elements.compareViewButton.classList.toggle('active', isCompareMode);
+  elements.compareViewButton.setAttribute('aria-pressed', String(isCompareMode));
+}
+
+function setCompareMode(mode) {
+  if (mode === state.compareMode) return;
+
+  if (mode === 'compare') {
+    if (!state.selectedImageId) return;
+    state.compareMode = 'compare';
+    state.pinnedCompareImageId = state.selectedImageId;
+  } else {
+    state.compareMode = 'single';
+    state.pinnedCompareImageId = '';
+  }
+
   render();
 }
 
@@ -1753,6 +1775,7 @@ function changeViewportZoom(viewport, delta) {
 }
 
 function changeActiveCompareZoom(delta) {
+  if (state.compareMode === 'compare') return;
   const viewport = getActiveCompareViewport();
   activateCompareViewport(viewport);
   changeViewportZoom(viewport, delta);
@@ -1774,9 +1797,19 @@ function compareItemSignature(item) {
 
 function renderComparePanel() {
   const selected = findSelectedImage();
-  const pinned = findImageById(state.pinnedCompareImageId);
-  const signature = selected
-    ? `${compareItemSignature(pinned)}::${compareItemSignature(selected)}`
+  let pinned = state.compareMode === 'compare' ? findImageById(state.pinnedCompareImageId) : null;
+  if (state.compareMode === 'compare' && !pinned && selected) {
+    state.pinnedCompareImageId = selected.image.id;
+    pinned = selected;
+  } else if (state.compareMode === 'compare' && !pinned) {
+    state.compareMode = 'single';
+    updateCompareModeButtons();
+  }
+  const isCompareMode = Boolean(pinned);
+  const secondImage = selected?.image.id === pinned?.image.id ? null : selected;
+  const detailsItem = secondImage || pinned || selected;
+  const signature = detailsItem
+    ? `${state.compareMode}::${compareItemSignature(pinned)}::${compareItemSignature(secondImage || selected)}`
     : `empty::${state.projectPath ? 'project' : 'no-project'}`;
 
   if (elements.compareContent.dataset.signature === signature) {
@@ -1787,7 +1820,8 @@ function renderComparePanel() {
   elements.compareContent.dataset.signature = signature;
   elements.compareContent.replaceChildren();
 
-  if (!selected) {
+  if (!detailsItem) {
+    elements.compareDetails.hidden = true;
     elements.compareContent.className = 'compare-empty';
     elements.compareContent.textContent = state.projectPath
       ? '点击任意图片卡片后，这里会显示大图。'
@@ -1795,30 +1829,43 @@ function renderComparePanel() {
     return;
   }
 
-  elements.compareContent.className = pinned ? 'compare-stack' : 'compare-single';
+  const statusLabel = STATUS_OPTIONS.find((option) => option.value === detailsItem.image.status)?.label || '待定';
+  elements.compareStatusText.textContent = statusLabel;
+  elements.compareFileText.textContent = detailsItem.image.fileName;
+  elements.compareFileMeta.textContent = `${detailsItem.track.name} / 版本 ${detailsItem.image.version}`;
+  elements.compareDetails.hidden = isCompareMode;
 
-  if (pinned) {
-    elements.compareContent.appendChild(createComparePane('固定图', pinned));
-    elements.compareContent.appendChild(createComparePane('当前图', selected));
+  elements.compareContent.className = isCompareMode ? 'compare-stack' : 'compare-single';
+
+  if (isCompareMode) {
+    elements.compareContent.appendChild(createComparePane(pinned, true));
+    elements.compareContent.appendChild(
+      secondImage
+        ? createComparePane(secondImage)
+        : createComparePlaceholder()
+    );
     updateCompareZoomButtons();
     return;
   }
 
-  elements.compareContent.appendChild(createComparePane('当前图', selected));
+  elements.compareContent.appendChild(createComparePane(selected));
   updateCompareZoomButtons();
 }
 
-function createComparePane(label, item) {
+function createComparePane(item, isPinned = false) {
   const pane = document.createElement('section');
-  pane.className = `compare-pane ${label === '固定图' ? 'compare-pane-pinned' : 'compare-pane-current'}`;
+  pane.className = `compare-pane ${isPinned ? 'compare-pane-pinned' : 'compare-pane-current'}`;
 
   const archiveTag = document.createElement('div');
   archiveTag.className = 'compare-archive-tag';
-  archiveTag.textContent = `${label} / ${item.track.name}`;
+  archiveTag.textContent = item.image.fileName;
+  archiveTag.title = item.image.fileName;
 
+  const statusValue = item.image.status || 'pending';
+  const statusLabel = STATUS_OPTIONS.find((option) => option.value === statusValue)?.label || '待定';
   const sideMarker = document.createElement('div');
-  sideMarker.className = 'compare-side-marker';
-  sideMarker.innerHTML = `<strong>${label === '固定图' ? '01' : '02'}</strong><span>${escapeHtml(label)}</span>`;
+  sideMarker.className = `compare-side-marker status-${statusValue}`;
+  sideMarker.textContent = statusLabel;
 
   const imageButton = document.createElement('button');
   imageButton.type = 'button';
@@ -1838,22 +1885,27 @@ function createComparePane(label, item) {
   imageStage.appendChild(image);
   imageButton.appendChild(imageStage);
 
-  const caption = document.createElement('div');
-  caption.className = 'compare-caption';
-  const statusLabel = STATUS_OPTIONS.find((option) => option.value === item.image.status)?.label || '待定';
-  caption.innerHTML = `
-    <div class="compare-info-card compare-info-card-small">
-      <strong>状态</strong>
-      <span>${escapeHtml(statusLabel)}</span>
-    </div>
-    <div class="compare-info-card">
-      <strong>文件</strong>
-      <span>${escapeHtml(item.image.fileName)}</span>
-      <em>${escapeHtml(item.track.name)} / 版本 ${escapeHtml(item.image.version)}</em>
-    </div>
-  `;
+  pane.append(archiveTag, sideMarker, imageButton);
+  return pane;
+}
 
-  pane.append(archiveTag, sideMarker, imageButton, caption);
+function createComparePlaceholder() {
+  const pane = document.createElement('section');
+  pane.className = 'compare-pane compare-pane-placeholder';
+
+  const title = document.createElement('div');
+  title.className = 'compare-archive-tag';
+  title.textContent = '等待选择图片';
+
+  const sideMarker = document.createElement('div');
+  sideMarker.className = 'compare-side-marker status-empty';
+  sideMarker.textContent = '待选择';
+
+  const message = document.createElement('div');
+  message.className = 'compare-placeholder-message';
+  message.textContent = '点击轨道中的另一张图片';
+
+  pane.append(title, sideMarker, message);
   return pane;
 }
 
@@ -2053,7 +2105,9 @@ elements.scrollBoardBottomButton.addEventListener('click', () => {
 elements.railBoard.addEventListener('scroll', updateBoardNavigationButtons);
 window.addEventListener('resize', updateBoardNavigationButtons);
 elements.undoButton.addEventListener('click', undoLastAction);
-elements.pinCompareButton.addEventListener('click', togglePinnedCompareImage);
+elements.compareViewButton.addEventListener('click', () => {
+  setCompareMode(state.compareMode === 'compare' ? 'single' : 'compare');
+});
 elements.zoomInButton.addEventListener('click', () => changeActiveCompareZoom(COMPARE_ZOOM_STEP));
 elements.zoomOutButton.addEventListener('click', () => changeActiveCompareZoom(-COMPARE_ZOOM_STEP));
 elements.minimizeWindowButton.addEventListener('click', () => window.imageRail?.minimizeWindow?.());
