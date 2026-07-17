@@ -59,15 +59,19 @@
           </div>
           <div id="compareContent" class="compare-empty">选择一张图片后，这里会显示大图。</div>
           <div id="compareDetails" class="compare-details" hidden>
-            <div class="compare-detail-status">
-              <strong>状态</strong>
-              <span id="compareStatusText">待定</span>
+            <div class="compare-detail-metric">
+              <strong>图片尺寸</strong>
+              <span id="compareDimensionsText">-</span>
             </div>
-            <div class="compare-detail-file">
-              <strong>文件</strong>
-              <span id="compareFileText"></span>
-              <em id="compareFileMeta"></em>
+            <div class="compare-detail-metric">
+              <strong>图片大小</strong>
+              <span id="compareSizeText">-</span>
             </div>
+            <label class="compare-detail-note" for="compareNoteInput">
+              <strong>备注</strong>
+              <input id="compareNoteInput" type="text" placeholder="添加备注" autocomplete="off" />
+            </label>
+            <button id="compareRevealButton" class="compare-reveal-button" type="button" title="在文件夹中打开">打开</button>
           </div>
         </aside>
       </main>

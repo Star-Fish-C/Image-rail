@@ -102,6 +102,10 @@
       projectPath: payload.projectPath,
       relativePath: payload.relativePath
     }),
+    getImageFileMetadata: (payload) => invoke('get_image_file_metadata_command', {
+      projectPath: payload.projectPath,
+      relativePath: payload.relativePath
+    }),
     startWindowDrag: () => invoke('start_window_drag_command'),
     minimizeWindow: () => invoke('minimize_window_command'),
     toggleMaximizeWindow: () => invoke('toggle_maximize_window_command'),

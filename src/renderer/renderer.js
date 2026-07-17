@@ -35,6 +35,7 @@ const state = {
   tracksToScrollEnd: new Set(),
   undoEntry: null,
   undoInProgress: false,
+  compareNoteUndo: null,
   savePromise: Promise.resolve(),
   activeCompareViewport: null,
   comparePanelWidth: Number(localStorage.getItem(COMPARE_WIDTH_STORAGE_KEY)) || 390
@@ -52,9 +53,10 @@ const elements = {
   tracks: document.querySelector('#tracks'),
   compareContent: document.querySelector('#compareContent'),
   compareDetails: document.querySelector('#compareDetails'),
-  compareStatusText: document.querySelector('#compareStatusText'),
-  compareFileText: document.querySelector('#compareFileText'),
-  compareFileMeta: document.querySelector('#compareFileMeta'),
+  compareDimensionsText: document.querySelector('#compareDimensionsText'),
+  compareSizeText: document.querySelector('#compareSizeText'),
+  compareNoteInput: document.querySelector('#compareNoteInput'),
+  compareRevealButton: document.querySelector('#compareRevealButton'),
   comparePanel: document.querySelector('.compare-panel'),
   compareResizer: document.querySelector('#compareResizer'),
   compareViewButton: document.querySelector('#compareViewButton'),
@@ -208,6 +210,23 @@ function imageMimeFromName(fileName) {
 
 function imageCacheKey(image) {
   return [image?.id, image?.createdAt, image?.fileName].filter(Boolean).join('_');
+}
+
+function formatFileSize(sizeBytes) {
+  const bytes = Number(sizeBytes);
+  if (!Number.isFinite(bytes) || bytes < 0) return '-';
+  if (bytes < 1024) return `${bytes} B`;
+
+  const units = ['KB', 'MB', 'GB'];
+  let value = bytes / 1024;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  const digits = value >= 100 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(digits)} ${units[unitIndex]}`;
 }
 
 function setProject(projectPath, project) {
@@ -914,23 +933,8 @@ function createImageCard(trackId, image) {
   version.textContent = `版本 ${image.version}`;
   titleRow.append(fileName, version);
 
-  const note = document.createElement('textarea');
-  note.placeholder = '备注';
-  note.value = image.note || '';
-  stopCardClick(note);
-  let noteUndo = null;
-  note.addEventListener('focus', () => {
-    noteUndo = captureUndo('编辑图片备注');
-  });
-  note.addEventListener('input', () => {
-    if (noteUndo) {
-      commitUndo(noteUndo);
-      noteUndo = null;
-    }
-    updateImage(trackId, image.id, { note: note.value });
-  });
-
   const status = document.createElement('select');
+  status.className = 'card-status-select';
   STATUS_OPTIONS.forEach((option) => {
     const item = document.createElement('option');
     item.value = option.value;
@@ -959,7 +963,7 @@ function createImageCard(trackId, image) {
   });
 
   actions.append(status, deleteButton);
-  body.append(titleRow, note, actions);
+  body.append(titleRow, actions);
   card.append(thumbButton, body);
   card.addEventListener('click', () => {
     if (state.selectedImageId === image.id) return;
@@ -1370,6 +1374,10 @@ async function revealContextMenuImage() {
 
   if (!image) return;
 
+  await revealImageInFolder(image);
+}
+
+async function revealImageInFolder(image) {
   try {
     await window.imageRail.revealImageInFolder({
       projectPath: state.projectPath,
@@ -1646,7 +1654,13 @@ function updateImage(trackId, imageId, patch) {
 
   Object.assign(image, patch);
   const card = elements.tracks.querySelector(`.image-card[data-image-id="${CSS.escape(imageId)}"]`);
-  if (card) card.dataset.renderKey = imageCardRenderKey(trackId, image);
+  if (card) {
+    card.dataset.renderKey = imageCardRenderKey(trackId, image);
+    if (patch.status) {
+      const statusSelect = card.querySelector('.card-status-select');
+      if (statusSelect) statusSelect.value = image.status;
+    }
+  }
   saveProject({ silent: true });
   renderComparePanel();
 }
@@ -1871,6 +1885,15 @@ function compareItemSignature(item) {
   ].join('|');
 }
 
+function closeCompareStatusMenus(exceptMenu = null) {
+  document.querySelectorAll('.compare-status-menu:not([hidden])').forEach((menu) => {
+    if (menu === exceptMenu) return;
+    menu.hidden = true;
+    menu.closest('.compare-status-control')?.querySelector('.compare-status-button')
+      ?.setAttribute('aria-expanded', 'false');
+  });
+}
+
 function renderComparePanel() {
   const selected = findSelectedImage();
   let pinned = state.compareMode === 'compare' ? findImageById(state.pinnedCompareImageId) : null;
@@ -1907,11 +1930,15 @@ function renderComparePanel() {
     return;
   }
 
-  const statusLabel = STATUS_OPTIONS.find((option) => option.value === detailsItem.image.status)?.label || '待定';
-  elements.compareStatusText.textContent = statusLabel;
-  elements.compareFileText.textContent = detailsItem.image.fileName;
-  elements.compareFileMeta.textContent = `${detailsItem.track.name} / 版本 ${detailsItem.image.version}`;
   elements.compareDetails.hidden = isCompareMode;
+  if (!isCompareMode) {
+    elements.compareDimensionsText.textContent = '读取中';
+    elements.compareSizeText.textContent = '读取中';
+    elements.compareNoteInput.value = selected.image.note || '';
+    elements.compareNoteInput.dataset.trackId = selected.track.id;
+    elements.compareNoteInput.dataset.imageId = selected.image.id;
+    elements.compareRevealButton.dataset.imageId = selected.image.id;
+  }
 
   elements.compareContent.className = isCompareMode ? 'compare-stack' : 'compare-single';
 
@@ -1926,7 +1953,9 @@ function renderComparePanel() {
     return;
   }
 
-  elements.compareContent.appendChild(createComparePane(selected));
+  const pane = createComparePane(selected);
+  elements.compareContent.appendChild(pane);
+  updateCompareDetailsMetadata(selected, pane, signature);
   updateCompareZoomButtons();
 }
 
@@ -1934,16 +1963,79 @@ function createComparePane(item, isPinned = false) {
   const pane = document.createElement('section');
   pane.className = `compare-pane ${isPinned ? 'compare-pane-pinned' : 'compare-pane-current'}`;
 
+  const heading = document.createElement('div');
+  heading.className = 'compare-pane-heading';
+
   const archiveTag = document.createElement('div');
   archiveTag.className = 'compare-archive-tag';
   archiveTag.textContent = item.image.fileName;
   archiveTag.title = item.image.fileName;
 
+  const path = document.createElement('div');
+  path.className = 'compare-image-path';
+  path.textContent = `${item.track.name} > 版本 ${item.image.version}`;
+  path.title = path.textContent;
+
+  heading.append(archiveTag, path);
+
   const statusValue = item.image.status || 'pending';
   const statusLabel = STATUS_OPTIONS.find((option) => option.value === statusValue)?.label || '待定';
-  const sideMarker = document.createElement('div');
-  sideMarker.className = `compare-side-marker status-${statusValue}`;
-  sideMarker.textContent = statusLabel;
+  const statusControl = document.createElement('div');
+  statusControl.className = `compare-status-control status-${statusValue}`;
+
+  const statusButton = document.createElement('button');
+  statusButton.type = 'button';
+  statusButton.className = 'compare-status-button';
+  statusButton.setAttribute('aria-label', `修改 ${item.image.fileName} 的状态`);
+  statusButton.setAttribute('aria-haspopup', 'menu');
+  statusButton.setAttribute('aria-expanded', 'false');
+
+  const statusButtonLabel = document.createElement('span');
+  statusButtonLabel.textContent = statusLabel;
+
+  const statusCaret = document.createElement('span');
+  statusCaret.className = 'compare-status-caret';
+  statusCaret.textContent = '⌄';
+  statusButton.append(statusButtonLabel, statusCaret);
+
+  const statusMenu = document.createElement('div');
+  statusMenu.className = 'compare-status-menu';
+  statusMenu.setAttribute('role', 'menu');
+  statusMenu.hidden = true;
+
+  STATUS_OPTIONS.forEach((option) => {
+    const optionButton = document.createElement('button');
+    optionButton.type = 'button';
+    optionButton.className = `compare-status-option${option.value === statusValue ? ' active' : ''}`;
+    optionButton.setAttribute('role', 'menuitemradio');
+    optionButton.setAttribute('aria-checked', String(option.value === statusValue));
+
+    const dot = document.createElement('span');
+    dot.className = `compare-status-dot status-${option.value}`;
+
+    const label = document.createElement('span');
+    label.textContent = option.label;
+    optionButton.append(dot, label);
+    optionButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      closeCompareStatusMenus();
+      if (option.value === statusValue) return;
+
+      const undo = captureUndo('修改图片状态');
+      updateImage(item.track.id, item.image.id, { status: option.value });
+      commitUndo(undo);
+    });
+    statusMenu.appendChild(optionButton);
+  });
+
+  statusButton.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const willOpen = statusMenu.hidden;
+    closeCompareStatusMenus(statusMenu);
+    statusMenu.hidden = !willOpen;
+    statusButton.setAttribute('aria-expanded', String(willOpen));
+  });
+  statusControl.append(statusButton, statusMenu);
 
   const imageButton = document.createElement('button');
   imageButton.type = 'button';
@@ -1963,8 +2055,39 @@ function createComparePane(item, isPinned = false) {
   imageStage.appendChild(image);
   imageButton.appendChild(imageStage);
 
-  pane.append(archiveTag, sideMarker, imageButton);
+  pane.append(heading, statusControl, imageButton);
   return pane;
+}
+
+function updateCompareDetailsMetadata(item, pane, signature) {
+  const isCurrent = () => (
+    state.compareMode === 'single'
+    && elements.compareContent.dataset.signature === signature
+    && elements.compareNoteInput.dataset.imageId === item.image.id
+  );
+  const image = pane.querySelector('img');
+  const showDimensions = () => {
+    if (!isCurrent()) return;
+    elements.compareDimensionsText.textContent = image?.naturalWidth && image?.naturalHeight
+      ? `${image.naturalWidth} × ${image.naturalHeight}`
+      : '无法读取';
+  };
+
+  if (image?.complete) {
+    showDimensions();
+  } else {
+    image?.addEventListener('load', showDimensions, { once: true });
+    image?.addEventListener('error', showDimensions, { once: true });
+  }
+
+  window.imageRail.getImageFileMetadata({
+    projectPath: state.projectPath,
+    relativePath: item.image.relativePath
+  }).then((metadata) => {
+    if (isCurrent()) elements.compareSizeText.textContent = formatFileSize(metadata.sizeBytes);
+  }).catch(() => {
+    if (isCurrent()) elements.compareSizeText.textContent = '无法读取';
+  });
 }
 
 function createComparePlaceholder() {
@@ -2195,6 +2318,28 @@ elements.syncPanButton.addEventListener('click', toggleComparePanSync);
 elements.syncZoomButton.addEventListener('click', toggleCompareZoomSync);
 elements.zoomInButton.addEventListener('click', () => changeActiveCompareZoom(COMPARE_ZOOM_STEP));
 elements.zoomOutButton.addEventListener('click', () => changeActiveCompareZoom(-COMPARE_ZOOM_STEP));
+elements.compareNoteInput.addEventListener('focus', () => {
+  state.compareNoteUndo = captureUndo('编辑图片备注');
+});
+elements.compareNoteInput.addEventListener('input', () => {
+  const imageId = elements.compareNoteInput.dataset.imageId;
+  const trackId = elements.compareNoteInput.dataset.trackId;
+  const item = findImageById(imageId);
+  if (!item || item.track.id !== trackId) return;
+
+  if (state.compareNoteUndo) {
+    commitUndo(state.compareNoteUndo);
+    state.compareNoteUndo = null;
+  }
+  updateImage(trackId, imageId, { note: elements.compareNoteInput.value });
+});
+elements.compareNoteInput.addEventListener('blur', () => {
+  state.compareNoteUndo = null;
+});
+elements.compareRevealButton.addEventListener('click', () => {
+  const item = findImageById(elements.compareRevealButton.dataset.imageId);
+  if (item) revealImageInFolder(item.image);
+});
 elements.minimizeWindowButton.addEventListener('click', () => window.imageRail?.minimizeWindow?.());
 elements.maximizeWindowButton.addEventListener('click', () => window.imageRail?.toggleMaximizeWindow?.());
 elements.closeWindowButton.addEventListener('click', () => window.imageRail?.closeWindow?.());
@@ -2253,6 +2398,10 @@ document.addEventListener('pointerdown', (event) => {
     closeContextMenu();
   }
 
+  if (!event.target.closest('.compare-status-control')) {
+    closeCompareStatusMenus();
+  }
+
   if (!event.target.closest('.confirm-delete')) {
     cancelInlineDeleteConfirmations();
   }
@@ -2297,6 +2446,10 @@ window.addEventListener('keydown', (event) => {
 
   if (event.key === 'Escape' && !elements.contextMenu.hidden) {
     closeContextMenu();
+  }
+
+  if (event.key === 'Escape') {
+    closeCompareStatusMenus();
   }
 
   if (event.key === 'Escape' && !elements.appMessage.hidden) {

@@ -34,6 +34,7 @@ fn main() {
             rename_track_prefix_command,
             rename_image_file_command,
             reveal_image_in_folder_command,
+            get_image_file_metadata_command,
             start_window_drag_command,
             minimize_window_command,
             toggle_maximize_window_command,
@@ -1085,6 +1086,24 @@ fn reveal_image_in_folder_command(project_path: String, relative_path: String) -
     }
 
     Ok(())
+}
+
+#[tauri::command]
+fn get_image_file_metadata_command(
+    project_path: String,
+    relative_path: String,
+) -> AppResult<Value> {
+    if relative_path.trim().is_empty() {
+        return Err("没有找到图片路径".to_string());
+    }
+
+    let image_path = project_scoped_file_path(&project_path, &relative_path)?;
+    let metadata = fs::metadata(&image_path).map_err(|error| error.to_string())?;
+    if !metadata.is_file() {
+        return Err("图片路径不是文件".to_string());
+    }
+
+    Ok(json!({ "sizeBytes": metadata.len() }))
 }
 
 #[tauri::command]
