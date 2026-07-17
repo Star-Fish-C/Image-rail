@@ -52,6 +52,8 @@
             <div class="compare-tools">
               <button id="zoomOutButton" type="button" disabled title="缩小">-</button>
               <button id="zoomInButton" type="button" disabled title="放大">+</button>
+              <button id="syncPanButton" class="compare-sync-button" type="button" title="同步移动" aria-pressed="false" hidden disabled>移动</button>
+              <button id="syncZoomButton" class="compare-sync-button" type="button" title="同步缩放" aria-pressed="false" hidden disabled>缩放</button>
               <button id="compareViewButton" class="compare-mode-button" type="button" aria-pressed="false" disabled>对比展示</button>
             </div>
           </div>
@@ -114,9 +116,11 @@
     <div class="context-menu" id="contextMenu" hidden>
       <button id="copyImageButton" type="button">复制</button>
       <button id="pasteImageButton" type="button">粘贴</button>
+      <div class="context-menu-separator" role="separator"></div>
       <button id="renameImageButton" type="button">重命名图片</button>
       <button id="copyPathButton" type="button">复制文件路径</button>
       <button id="revealImageButton" type="button">在文件夹中打开</button>
+      <div class="context-menu-separator" role="separator"></div>
       <button id="deleteContextImageButton" class="danger-menu-item" type="button">删除图片</button>
     </div>
 

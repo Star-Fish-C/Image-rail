@@ -18,6 +18,8 @@ const state = {
   selectedImageId: '',
   pinnedCompareImageId: '',
   compareMode: 'single',
+  syncComparePan: false,
+  syncCompareZoom: false,
   renameResolver: null,
   pendingDelete: { type: '', id: '' },
   contextMenuImage: null,
@@ -58,6 +60,8 @@ const elements = {
   compareViewButton: document.querySelector('#compareViewButton'),
   zoomInButton: document.querySelector('#zoomInButton'),
   zoomOutButton: document.querySelector('#zoomOutButton'),
+  syncPanButton: document.querySelector('#syncPanButton'),
+  syncZoomButton: document.querySelector('#syncZoomButton'),
   previewModal: document.querySelector('#previewModal'),
   previewImage: document.querySelector('#previewImage'),
   closePreviewButton: document.querySelector('#closePreviewButton'),
@@ -112,17 +116,43 @@ function getActiveCompareViewport() {
   return document.querySelector('.compare-image-button');
 }
 
+function getCompareViewports() {
+  return [...document.querySelectorAll('.compare-image-button')];
+}
+
 function getViewportZoom(viewport) {
   return Number(viewport?.dataset.zoom) || 1;
 }
 
-function setViewportZoom(viewport, zoom) {
-  if (!viewport) return;
+function applyViewportZoom(viewport, zoom) {
   const cleanZoom = clamp(zoom, COMPARE_ZOOM_MIN, COMPARE_ZOOM_MAX);
   viewport.dataset.zoom = String(cleanZoom);
   viewport.style.setProperty('--compare-zoom', String(cleanZoom));
   viewport.classList.toggle('zoomed', cleanZoom !== 1);
+}
+
+function setViewportZoom(viewport, zoom) {
+  if (!viewport) return;
+  const targets = state.compareMode === 'compare' && state.syncCompareZoom
+    ? getCompareViewports()
+    : [viewport];
+
+  targets.forEach((target) => applyViewportZoom(target, zoom));
   updateCompareZoomButtons();
+}
+
+function getViewportPan(viewport) {
+  return {
+    x: Number(viewport?.dataset.panX) || 0,
+    y: Number(viewport?.dataset.panY) || 0
+  };
+}
+
+function applyViewportPan(viewport, x, y) {
+  viewport.dataset.panX = String(x);
+  viewport.dataset.panY = String(y);
+  viewport.style.setProperty('--pan-x', `${x}px`);
+  viewport.style.setProperty('--pan-y', `${y}px`);
 }
 
 function activateCompareViewport(viewport) {
@@ -188,6 +218,8 @@ function setProject(projectPath, project) {
   state.selectedImageId = '';
   state.pinnedCompareImageId = '';
   state.compareMode = 'single';
+  state.syncComparePan = false;
+  state.syncCompareZoom = false;
   clearPendingDelete();
   state.undoEntry = null;
   render();
@@ -455,6 +487,8 @@ async function deleteProjectFromList(project, button) {
       state.selectedImageId = '';
       state.pinnedCompareImageId = '';
       state.compareMode = 'single';
+      state.syncComparePan = false;
+      state.syncCompareZoom = false;
       render();
     }
 
@@ -1747,10 +1781,50 @@ function refreshSelectedImageView() {
 
 function updateCompareModeButtons(hasProject = Boolean(state.projectPath && state.project)) {
   const isCompareMode = state.compareMode === 'compare';
+  const hasComparePair = Boolean(
+    isCompareMode &&
+    state.pinnedCompareImageId &&
+    state.selectedImageId &&
+    state.pinnedCompareImageId !== state.selectedImageId
+  );
 
   elements.compareViewButton.disabled = !hasProject || (!state.selectedImageId && !isCompareMode);
   elements.compareViewButton.classList.toggle('active', isCompareMode);
   elements.compareViewButton.setAttribute('aria-pressed', String(isCompareMode));
+  elements.zoomOutButton.hidden = isCompareMode;
+  elements.zoomInButton.hidden = isCompareMode;
+  elements.syncPanButton.hidden = !isCompareMode;
+  elements.syncZoomButton.hidden = !isCompareMode;
+  elements.syncPanButton.disabled = !hasComparePair;
+  elements.syncZoomButton.disabled = !hasComparePair;
+  elements.syncPanButton.classList.toggle('active', state.syncComparePan);
+  elements.syncZoomButton.classList.toggle('active', state.syncCompareZoom);
+  elements.syncPanButton.setAttribute('aria-pressed', String(state.syncComparePan));
+  elements.syncZoomButton.setAttribute('aria-pressed', String(state.syncCompareZoom));
+}
+
+function toggleComparePanSync() {
+  state.syncComparePan = !state.syncComparePan;
+
+  if (state.syncComparePan) {
+    const source = getActiveCompareViewport();
+    const pan = getViewportPan(source);
+    getCompareViewports().forEach((viewport) => applyViewportPan(viewport, pan.x, pan.y));
+  }
+
+  updateCompareModeButtons();
+}
+
+function toggleCompareZoomSync() {
+  state.syncCompareZoom = !state.syncCompareZoom;
+
+  if (state.syncCompareZoom) {
+    const source = getActiveCompareViewport();
+    const zoom = getViewportZoom(source);
+    getCompareViewports().forEach((viewport) => applyViewportZoom(viewport, zoom));
+  }
+
+  updateCompareModeButtons();
 }
 
 function setCompareMode(mode) {
@@ -1763,6 +1837,8 @@ function setCompareMode(mode) {
   } else {
     state.compareMode = 'single';
     state.pinnedCompareImageId = '';
+    state.syncComparePan = false;
+    state.syncCompareZoom = false;
   }
 
   render();
@@ -1803,6 +1879,8 @@ function renderComparePanel() {
     pinned = selected;
   } else if (state.compareMode === 'compare' && !pinned) {
     state.compareMode = 'single';
+    state.syncComparePan = false;
+    state.syncCompareZoom = false;
     updateCompareModeButtons();
   }
   const isCompareMode = Boolean(pinned);
@@ -1913,12 +1991,14 @@ function setupCompareImagePanZoom(viewport) {
   let isDragging = false;
   let lastX = 0;
   let lastY = 0;
-  let panX = 0;
-  let panY = 0;
+  let panX = getViewportPan(viewport).x;
+  let panY = getViewportPan(viewport).y;
 
   const applyPan = () => {
-    viewport.style.setProperty('--pan-x', `${panX}px`);
-    viewport.style.setProperty('--pan-y', `${panY}px`);
+    const targets = state.compareMode === 'compare' && state.syncComparePan
+      ? [...new Set([viewport, ...getCompareViewports()])]
+      : [viewport];
+    targets.forEach((target) => applyViewportPan(target, panX, panY));
   };
 
   applyPan();
@@ -1941,6 +2021,9 @@ function setupCompareImagePanZoom(viewport) {
     if (event.button !== 0) return;
     event.preventDefault();
     activateCompareViewport(viewport);
+    const currentPan = getViewportPan(viewport);
+    panX = currentPan.x;
+    panY = currentPan.y;
     isDragging = true;
     lastX = event.clientX;
     lastY = event.clientY;
@@ -2108,6 +2191,8 @@ elements.undoButton.addEventListener('click', undoLastAction);
 elements.compareViewButton.addEventListener('click', () => {
   setCompareMode(state.compareMode === 'compare' ? 'single' : 'compare');
 });
+elements.syncPanButton.addEventListener('click', toggleComparePanSync);
+elements.syncZoomButton.addEventListener('click', toggleCompareZoomSync);
 elements.zoomInButton.addEventListener('click', () => changeActiveCompareZoom(COMPARE_ZOOM_STEP));
 elements.zoomOutButton.addEventListener('click', () => changeActiveCompareZoom(-COMPARE_ZOOM_STEP));
 elements.minimizeWindowButton.addEventListener('click', () => window.imageRail?.minimizeWindow?.());
@@ -2195,7 +2280,16 @@ window.addEventListener('blur', () => {
   clearImageDragCancelZone();
 });
 window.addEventListener('keydown', (event) => {
-  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'z') {
+  const key = event.key.toLowerCase();
+  const isReloadShortcut = key === 'f5' || ((event.ctrlKey || event.metaKey) && key === 'r');
+
+  if (isReloadShortcut) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    return;
+  }
+
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && key === 'z') {
     event.preventDefault();
     undoLastAction();
     return;
@@ -2216,6 +2310,6 @@ window.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && !elements.projectModal.hidden) {
     closeProjectModal();
   }
-});
+}, true);
 
 render();

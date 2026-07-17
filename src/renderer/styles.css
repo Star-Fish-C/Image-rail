@@ -157,16 +157,16 @@ button:disabled {
 }
 
 .topbar {
-  min-height: 82px;
+  min-height: 68px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
+  gap: 16px;
   margin: 0;
-  padding: 16px 18px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--line);
   border: 1px solid var(--line);
-  border-radius: 22px;
+  border-radius: 20px;
   background: rgba(255, 255, 255, 0.72);
   box-shadow: var(--shadow-soft);
   backdrop-filter: blur(22px);
@@ -180,13 +180,13 @@ button:disabled {
 .title-heading {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 4px;
+  gap: 10px;
+  margin-bottom: 2px;
 }
 
 .topbar h1 {
   margin: 0;
-  font-size: 22px;
+  font-size: 20px;
   line-height: 1.2;
 }
 
@@ -227,7 +227,7 @@ button:disabled {
 .topbar p {
   margin: 0;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
   max-width: 760px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -236,7 +236,7 @@ button:disabled {
 
 .toolbar {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
@@ -244,7 +244,7 @@ button:disabled {
 .window-controls {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .window-controls button {
@@ -853,6 +853,27 @@ body.resizing-compare .compare-resizer {
   padding: 0;
   font-size: 18px;
   line-height: 1;
+}
+
+.compare-tools button[hidden] {
+  display: none;
+}
+
+.compare-tools .compare-sync-button {
+  width: 42px;
+  padding: 0 7px;
+  border-color: var(--line);
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.compare-header .compare-sync-button.active,
+.compare-header .compare-sync-button.active:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+  box-shadow: none;
 }
 
 .compare-tools .compare-mode-button {
@@ -1498,17 +1519,20 @@ body.resizing-compare .compare-resizer {
   align-items: center;
   justify-content: flex-start;
   border: 0;
-  border-radius: 8px;
+  border-radius: 0;
   padding: 0 10px;
   background: transparent;
   color: var(--text);
   box-shadow: none;
+  backdrop-filter: none;
   text-align: left;
   white-space: nowrap;
+  transition: background 120ms ease, color 120ms ease;
 }
 
 .context-menu button:hover:not(:disabled) {
   background: rgba(79, 124, 255, 0.10);
+  border-radius: 6px;
   color: var(--accent);
   transform: none;
   box-shadow: none;
@@ -1527,6 +1551,12 @@ body.resizing-compare .compare-resizer {
   color: rgba(113, 128, 150, 0.48);
   opacity: 1;
   cursor: not-allowed;
+}
+
+.context-menu-separator {
+  height: 1px;
+  margin: 4px 7px;
+  background: var(--line);
 }
 
 @keyframes rise-in {
