@@ -4,6 +4,7 @@
   const tauri = window.__TAURI__;
   const invoke = tauri?.core?.invoke;
   const convertFileSrc = tauri?.core?.convertFileSrc;
+  const listen = tauri?.event?.listen;
 
   if (!invoke) {
     console.error('Tauri API is not available.');
@@ -29,6 +30,9 @@
     saveProject: (payload) => invoke('save_project_command', {
       projectPath: payload.projectPath,
       project: payload.project
+    }),
+    clearUndoTrash: (payload) => invoke('clear_undo_trash_command', {
+      projectPath: payload.projectPath
     }),
     restoreProject: (payload) => invoke('restore_project_command', {
       projectPath: payload.projectPath,
@@ -109,6 +113,9 @@
     startWindowDrag: () => invoke('start_window_drag_command'),
     minimizeWindow: () => invoke('minimize_window_command'),
     toggleMaximizeWindow: () => invoke('toggle_maximize_window_command'),
-    closeWindow: () => invoke('close_window_command')
+    closeWindow: () => invoke('close_window_command'),
+    onCloseRequested: (handler) => listen
+      ? listen('imagerail-close-requested', handler)
+      : Promise.resolve(() => {})
   };
 })();

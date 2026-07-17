@@ -11,6 +11,7 @@ const COMPARE_MAX_WIDTH = 780;
 const COMPARE_ZOOM_MIN = 0.5;
 const COMPARE_ZOOM_MAX = 8;
 const COMPARE_ZOOM_STEP = 0.25;
+const MAX_RAW_IMAGE_BYTES = 100 * 1024 * 1024;
 
 const state = {
   projectPath: '',
@@ -24,7 +25,6 @@ const state = {
   pendingDelete: { type: '', id: '' },
   contextMenuImage: null,
   contextMenuTrackId: '',
-  draggedTrackId: '',
   trackDropIndicatorElement: null,
   trackDropIndicatorAfter: false,
   draggedImage: null,
@@ -35,8 +35,11 @@ const state = {
   tracksToScrollEnd: new Set(),
   undoEntry: null,
   undoInProgress: false,
+  closeInProgress: false,
   compareNoteUndo: null,
+  projectOperationPromise: Promise.resolve(),
   savePromise: Promise.resolve(),
+  pendingSaveTimer: null,
   activeCompareViewport: null,
   comparePanelWidth: Number(localStorage.getItem(COMPARE_WIDTH_STORAGE_KEY)) || 390
 };
@@ -248,15 +251,81 @@ function cloneProject(project = state.project) {
   return project ? JSON.parse(JSON.stringify(project)) : null;
 }
 
-function captureUndo(label) {
+function enqueueProjectOperation(operation) {
+  const task = state.projectOperationPromise
+    .catch(() => {})
+    .then(operation);
+  state.projectOperationPromise = task;
+  return task;
+}
+
+function enqueueCurrentProjectOperation(projectPath, operation) {
+  return enqueueProjectOperation(() => {
+    if (!state.project || state.projectPath !== projectPath) {
+      throw new Error('项目已经切换，已取消刚才的操作');
+    }
+    return operation();
+  });
+}
+
+function scheduleProjectSave(options = {}) {
+  if (state.pendingSaveTimer) window.clearTimeout(state.pendingSaveTimer);
+  const projectPath = state.projectPath;
+  state.pendingSaveTimer = window.setTimeout(() => {
+    state.pendingSaveTimer = null;
+    if (state.projectPath === projectPath) saveProject(options);
+  }, 280);
+}
+
+function flushScheduledProjectSave() {
+  if (state.pendingSaveTimer) {
+    window.clearTimeout(state.pendingSaveTimer);
+    state.pendingSaveTimer = null;
+    return saveProject({ silent: true });
+  }
+  return Promise.resolve();
+}
+
+async function waitForProjectOperations() {
+  await flushScheduledProjectSave();
+  await state.projectOperationPromise.catch(() => {});
+}
+
+async function closeApplication() {
+  if (state.closeInProgress) return;
+  state.closeInProgress = true;
+
+  try {
+    await waitForProjectOperations();
+    await window.imageRail?.closeWindow?.();
+  } catch (error) {
+    state.closeInProgress = false;
+    showAppMessage(getErrorText(error, '关闭应用失败'));
+  }
+}
+
+function captureUndo(label, options = {}) {
   if (!state.project || !state.projectPath) return null;
-  return { label, projectPath: state.projectPath, project: cloneProject() };
+  return {
+    label,
+    projectPath: state.projectPath,
+    project: cloneProject(),
+    preserveTrash: options.preserveTrash === true
+  };
 }
 
 function commitUndo(entry) {
   if (!entry) return;
   state.undoEntry = entry;
   updateUndoButton();
+
+  if (!entry.preserveTrash && window.imageRail?.clearUndoTrash) {
+    enqueueProjectOperation(() => window.imageRail.clearUndoTrash({
+      projectPath: entry.projectPath
+    })).catch((error) => {
+      showAppMessage(getErrorText(error, '清理旧撤回文件失败'));
+    });
+  }
 }
 
 function updateUndoButton() {
@@ -279,18 +348,19 @@ async function undoLastAction() {
   state.undoInProgress = true;
   updateUndoButton();
   try {
-    await state.savePromise.catch(() => {});
-    const result = await window.imageRail.restoreProject({
-      projectPath: state.projectPath,
-      currentProject: state.project,
-      previousProject: entry.project
+    await enqueueCurrentProjectOperation(entry.projectPath, async () => {
+      const result = await window.imageRail.restoreProject({
+        projectPath: state.projectPath,
+        currentProject: cloneProject(),
+        previousProject: entry.project
+      });
+      state.undoEntry = null;
+      state.projectPath = result.projectPath || state.projectPath;
+      state.project = result.project;
+      state.selectedImageId = findImageById(state.selectedImageId) ? state.selectedImageId : '';
+      state.pinnedCompareImageId = findImageById(state.pinnedCompareImageId) ? state.pinnedCompareImageId : '';
+      render();
     });
-    state.undoEntry = null;
-    state.projectPath = result.projectPath || state.projectPath;
-    state.project = result.project;
-    state.selectedImageId = findImageById(state.selectedImageId) ? state.selectedImageId : '';
-    state.pinnedCompareImageId = findImageById(state.pinnedCompareImageId) ? state.pinnedCompareImageId : '';
-    render();
   } catch (error) {
     showAppMessage(getErrorText(error, `撤回“${entry.label}”失败`));
   } finally {
@@ -307,6 +377,7 @@ function setProjectFromResult(result) {
 
 async function openProjectModal() {
   elements.projectModal.hidden = false;
+  await waitForProjectOperations();
   await renderProjectList();
 }
 
@@ -354,6 +425,7 @@ function createProjectListItem(project) {
     }
 
     try {
+      await waitForProjectOperations();
       const result = await window.imageRail.openExistingProject({
         projectPath: project.projectPath,
         projectDataFile: project.projectDataFile
@@ -421,18 +493,24 @@ async function createProjectFromFolder() {
     return;
   }
 
-  const result = await window.imageRail.chooseProjectFolder({
-    projectName: cleanProjectName
-  });
+  try {
+    await waitForProjectOperations();
+    const result = await window.imageRail.chooseProjectFolder({
+      projectName: cleanProjectName
+    });
 
-  if (result) {
-    setProject(result.projectPath, result.project);
-    closeProjectModal();
+    if (result) {
+      setProject(result.projectPath, result.project);
+      closeProjectModal();
+    }
+  } catch (error) {
+    showAppMessage(getErrorText(error, '创建项目失败'));
   }
 }
 
 async function rebindProjectFromList(project) {
   try {
+    await waitForProjectOperations();
     const result = await window.imageRail.rebindProjectFolder({
       projectDataFile: project.projectDataFile
     });
@@ -471,16 +549,18 @@ async function renameProjectFromList(project) {
   }
 
   try {
-    const fullProject = await getProjectForListAction(project);
-    const result = await window.imageRail.renameProject({
-      projectPath: project.projectPath,
-      project: fullProject,
-      newProjectName: cleanName
-    });
+    await enqueueProjectOperation(async () => {
+      const fullProject = await getProjectForListAction(project);
+      const result = await window.imageRail.renameProject({
+        projectPath: project.projectPath,
+        project: fullProject,
+        newProjectName: cleanName
+      });
 
-    if (state.projectPath === project.projectPath) {
-      setProjectFromResult(result);
-    }
+      if (state.projectPath === project.projectPath) {
+        setProjectFromResult(result);
+      }
+    });
 
     await renderProjectList();
   } catch (error) {
@@ -495,21 +575,23 @@ async function deleteProjectFromList(project, button) {
   }
 
   try {
-    await window.imageRail.deleteProjectRecord({
-      projectPath: project.projectPath,
-      projectDataFile: project.projectDataFile
-    });
+    await enqueueProjectOperation(async () => {
+      await window.imageRail.deleteProjectRecord({
+        projectPath: project.projectPath,
+        projectDataFile: project.projectDataFile
+      });
 
-    if (state.projectPath === project.projectPath) {
-      state.projectPath = '';
-      state.project = null;
-      state.selectedImageId = '';
-      state.pinnedCompareImageId = '';
-      state.compareMode = 'single';
-      state.syncComparePan = false;
-      state.syncCompareZoom = false;
-      render();
-    }
+      if (state.projectPath === project.projectPath) {
+        state.projectPath = '';
+        state.project = null;
+        state.selectedImageId = '';
+        state.pinnedCompareImageId = '';
+        state.compareMode = 'single';
+        state.syncComparePan = false;
+        state.syncCompareZoom = false;
+        render();
+      }
+    });
 
     clearPendingDelete();
     await renderProjectList();
@@ -712,12 +794,10 @@ function createTrackElement(track, trackIndex) {
       return;
     }
 
-    state.draggedTrackId = track.id;
     event.dataTransfer.effectAllowed = 'move';
     event.dataTransfer.setData('application/x-imagerail-track', track.id);
   });
   label.addEventListener('dragend', () => {
-    state.draggedTrackId = '';
     clearTrackDropIndicator();
   });
 
@@ -1287,17 +1367,20 @@ async function renameContextMenuImage() {
     return;
   }
 
-  const undo = captureUndo('重命名图片');
+  const projectPath = state.projectPath;
   try {
-    const result = await window.imageRail.renameImageFile({
-      projectPath: state.projectPath,
-      project: state.project,
-      trackId,
-      imageId: image.id,
-      newImageName: cleanName
+    await enqueueCurrentProjectOperation(projectPath, async () => {
+      const undo = captureUndo('重命名图片');
+      const result = await window.imageRail.renameImageFile({
+        projectPath,
+        project: cloneProject(),
+        trackId,
+        imageId: image.id,
+        newImageName: cleanName
+      });
+      setProjectFromResult(result);
+      commitUndo(undo);
     });
-    setProjectFromResult(result);
-    commitUndo(undo);
   } catch (error) {
     showAppMessage(getRenameErrorMessage(error, '重命名图片文件失败'));
   }
@@ -1322,23 +1405,31 @@ async function pasteContextMenuImage() {
 
   if (!trackId) return;
 
-  const undo = captureUndo('粘贴图片');
+  const projectPath = state.projectPath;
   try {
     const clipboardImage = await readClipboardImage();
+    if (clipboardImage.blob.size > MAX_RAW_IMAGE_BYTES) {
+      throw new Error('剪切板图片超过 100 MB，已停止导入');
+    }
     const extension = fileExtensionFromMime(clipboardImage.mimeType);
-    const result = await window.imageRail.addImageRawFileDataToTrack({
-      projectPath: state.projectPath,
-      project: state.project,
-      trackId,
-      fileName: `clipboard_${Date.now()}${extension}`,
-      mimeType: clipboardImage.mimeType,
-      fileData: await clipboardImage.blob.arrayBuffer()
-    });
+    const fileData = await clipboardImage.blob.arrayBuffer();
+    await flushScheduledProjectSave();
+    await enqueueCurrentProjectOperation(projectPath, async () => {
+      const undo = captureUndo('粘贴图片');
+      const result = await window.imageRail.addImageRawFileDataToTrack({
+        projectPath,
+        project: cloneProject(),
+        trackId,
+        fileName: `clipboard_${Date.now()}${extension}`,
+        mimeType: clipboardImage.mimeType,
+        fileData
+      });
 
-    state.project = result.project;
-    state.tracksToScrollEnd.add(trackId);
-    commitUndo(undo);
-    render();
+      state.project = result.project;
+      state.tracksToScrollEnd.add(trackId);
+      commitUndo(undo);
+      render();
+    });
   } catch (error) {
     showAppMessage(getErrorText(error, '粘贴图片失败'));
   }
@@ -1351,18 +1442,21 @@ async function deleteContextMenuImage() {
 
   if (!image || !trackId) return;
 
-  const undo = captureUndo('删除图片');
+  const projectPath = state.projectPath;
   try {
-    const result = await window.imageRail.deleteImageFile({
-      projectPath: state.projectPath,
-      project: state.project,
-      trackId,
-      imageId: image.id
+    await enqueueCurrentProjectOperation(projectPath, async () => {
+      const undo = captureUndo('删除图片', { preserveTrash: true });
+      const result = await window.imageRail.deleteImageFile({
+        projectPath,
+        project: cloneProject(),
+        trackId,
+        imageId: image.id
+      });
+      if (state.selectedImageId === image.id) state.selectedImageId = '';
+      if (state.pinnedCompareImageId === image.id) state.pinnedCompareImageId = '';
+      setProjectFromResult(result);
+      commitUndo(undo);
     });
-    if (state.selectedImageId === image.id) state.selectedImageId = '';
-    if (state.pinnedCompareImageId === image.id) state.pinnedCompareImageId = '';
-    setProjectFromResult(result);
-    commitUndo(undo);
   } catch (error) {
     showAppMessage(getRenameErrorMessage(error, '删除图片失败'));
   }
@@ -1433,31 +1527,49 @@ function markInlineDeleteConfirmation(button, type, id) {
 }
 
 async function importImageFileToTrack(file, trackId) {
-  const result = file.path
-    ? await window.imageRail.addImageToTrack({
-        projectPath: state.projectPath,
-        project: state.project,
-        trackId,
-        sourcePath: file.path
-      })
-    : await window.imageRail.addImageRawFileDataToTrack({
-        projectPath: state.projectPath,
-        project: state.project,
-        trackId,
-        fileName: file.name,
-        mimeType: file.type,
-        fileData: await file.arrayBuffer()
-      });
+  const projectPath = state.projectPath;
+  if (!file.path && file.size > MAX_RAW_IMAGE_BYTES) {
+    throw new Error('图片超过 100 MB，已停止导入');
+  }
+  const fileData = file.path ? null : await file.arrayBuffer();
+  if (!file.path) await flushScheduledProjectSave();
+  await enqueueCurrentProjectOperation(projectPath, async () => {
+    const result = file.path
+      ? await window.imageRail.addImageToTrack({
+          projectPath,
+          project: cloneProject(),
+          trackId,
+          sourcePath: file.path
+        })
+      : await window.imageRail.addImageRawFileDataToTrack({
+          projectPath,
+          project: cloneProject(),
+          trackId,
+          fileName: file.name,
+          mimeType: file.type,
+          fileData
+        });
 
-  state.project = result.project;
+    state.project = result.project;
+  });
 }
 
 async function handleDrop(event, trackId) {
   if (!state.projectPath || !state.project) return;
 
+  const droppedFiles = Array.from(event.dataTransfer.files || []);
+  const fallbackFiles = droppedFiles.length
+    ? []
+    : Array.from(event.dataTransfer.items || [])
+        .filter((item) => item.kind === 'file')
+        .map((item) => item.getAsFile())
+        .filter(Boolean);
+  const files = droppedFiles.length ? droppedFiles : fallbackFiles;
+  const imageUrl = getDraggedImageUrl(event.dataTransfer);
+
+  await waitForProjectOperations();
   rememberTrackScrollPositions();
   const undo = captureUndo('导入图片');
-  const files = Array.from(event.dataTransfer.files || []);
   let importedCount = 0;
 
   for (const file of files) {
@@ -1469,39 +1581,21 @@ async function handleDrop(event, trackId) {
     }
   }
 
-  if (importedCount === 0 && files.length === 0) {
-    const items = Array.from(event.dataTransfer.items || []);
-    const fileItems = items.filter((item) => item.kind === 'file');
-
-    for (const item of fileItems) {
-      const file = item.getAsFile();
-      if (!file) continue;
-
-      try {
-        await importImageFileToTrack(file, trackId);
-        importedCount += 1;
-      } catch (error) {
-        showAppMessage(getErrorText(error, '导入图片失败'));
-      }
-    }
-  }
-
-  if (importedCount === 0) {
-    const imageUrl = getDraggedImageUrl(event.dataTransfer);
-
-    if (imageUrl) {
-      try {
+  if (importedCount === 0 && imageUrl) {
+    try {
+      const projectPath = state.projectPath;
+      await enqueueCurrentProjectOperation(projectPath, async () => {
         const result = await window.imageRail.addImageUrlToTrack({
-          projectPath: state.projectPath,
-          project: state.project,
+          projectPath,
+          project: cloneProject(),
           trackId,
           url: imageUrl
         });
         state.project = result.project;
-        importedCount += 1;
-      } catch (error) {
-        showAppMessage(getErrorText(error, '从网页导入图片失败'));
-      }
+      });
+      importedCount += 1;
+    } catch (error) {
+      showAppMessage(getErrorText(error, '从网页导入图片失败'));
     }
   }
 
@@ -1568,16 +1662,19 @@ async function renameTrack(trackId) {
     return;
   }
 
-  const undo = captureUndo('重命名轨道');
+  const projectPath = state.projectPath;
   try {
-    const result = await window.imageRail.renameTrackFolder({
-      projectPath: state.projectPath,
-      project: state.project,
-      trackId,
-      newTrackName: cleanName
+    await enqueueCurrentProjectOperation(projectPath, async () => {
+      const undo = captureUndo('重命名轨道');
+      const result = await window.imageRail.renameTrackFolder({
+        projectPath,
+        project: cloneProject(),
+        trackId,
+        newTrackName: cleanName
+      });
+      setProjectFromResult(result);
+      commitUndo(undo);
     });
-    setProjectFromResult(result);
-    commitUndo(undo);
   } catch (error) {
     showAppMessage(getRenameErrorMessage(error, '重命名轨道文件夹失败'));
   }
@@ -1601,16 +1698,19 @@ async function renameTrackPrefix(trackId) {
     return;
   }
 
-  const undo = captureUndo('重命名图片前缀');
+  const projectPath = state.projectPath;
   try {
-    const result = await window.imageRail.renameTrackPrefix({
-      projectPath: state.projectPath,
-      project: state.project,
-      trackId,
-      newPrefix: cleanPrefix
+    await enqueueCurrentProjectOperation(projectPath, async () => {
+      const undo = captureUndo('重命名图片前缀');
+      const result = await window.imageRail.renameTrackPrefix({
+        projectPath,
+        project: cloneProject(),
+        trackId,
+        newPrefix: cleanPrefix
+      });
+      setProjectFromResult(result);
+      commitUndo(undo);
     });
-    setProjectFromResult(result);
-    commitUndo(undo);
   } catch (error) {
     showAppMessage(getRenameErrorMessage(error, '重命名图片失败'));
   }
@@ -1661,7 +1761,11 @@ function updateImage(trackId, imageId, patch) {
       if (statusSelect) statusSelect.value = image.status;
     }
   }
-  saveProject({ silent: true });
+  if (Object.hasOwn(patch, 'note')) {
+    scheduleProjectSave({ silent: true });
+  } else {
+    saveProject({ silent: true });
+  }
   renderComparePanel();
 }
 
@@ -1677,22 +1781,25 @@ async function deleteImageFile(trackId, imageId, button) {
     return;
   }
 
-  const undo = captureUndo('删除图片');
+  const projectPath = state.projectPath;
   try {
     rememberTrackScrollPositions();
-    const result = await window.imageRail.deleteImageFile({
-      projectPath: state.projectPath,
-      project: state.project,
-      trackId,
-      imageId
+    await enqueueCurrentProjectOperation(projectPath, async () => {
+      const undo = captureUndo('删除图片', { preserveTrash: true });
+      const result = await window.imageRail.deleteImageFile({
+        projectPath,
+        project: cloneProject(),
+        trackId,
+        imageId
+      });
+      clearPendingDelete();
+      state.projectPath = result.projectPath || state.projectPath;
+      state.project = result.project;
+      commitUndo(undo);
+      if (state.selectedImageId === imageId) state.selectedImageId = '';
+      if (state.pinnedCompareImageId === imageId) state.pinnedCompareImageId = '';
+      render();
     });
-    clearPendingDelete();
-    state.projectPath = result.projectPath || state.projectPath;
-    state.project = result.project;
-    commitUndo(undo);
-    if (state.selectedImageId === imageId) state.selectedImageId = '';
-    if (state.pinnedCompareImageId === imageId) state.pinnedCompareImageId = '';
-    render();
   } catch (error) {
     clearPendingDelete();
     resetInlineDeleteConfirmations();
@@ -1710,24 +1817,25 @@ async function removeTrackRecord(trackId, button) {
   }
 
   const removedImageIds = new Set(track.images.map((image) => image.id));
-  const undo = captureUndo('删除轨道');
+  const projectPath = state.projectPath;
   try {
-    if (removedImageIds.has(state.selectedImageId)) {
-      state.selectedImageId = '';
-    }
-
-    if (removedImageIds.has(state.pinnedCompareImageId)) {
-      state.pinnedCompareImageId = '';
-    }
-
-    const result = await window.imageRail.deleteTrackFolder({
-      projectPath: state.projectPath,
-      project: state.project,
-      trackId
+    await enqueueCurrentProjectOperation(projectPath, async () => {
+      const undo = captureUndo('删除轨道', { preserveTrash: true });
+      const result = await window.imageRail.deleteTrackFolder({
+        projectPath,
+        project: cloneProject(),
+        trackId
+      });
+      if (removedImageIds.has(state.selectedImageId)) {
+        state.selectedImageId = '';
+      }
+      if (removedImageIds.has(state.pinnedCompareImageId)) {
+        state.pinnedCompareImageId = '';
+      }
+      clearPendingDelete();
+      setProjectFromResult(result);
+      commitUndo(undo);
     });
-    clearPendingDelete();
-    setProjectFromResult(result);
-    commitUndo(undo);
   } catch (error) {
     clearPendingDelete();
     resetInlineDeleteConfirmations();
@@ -1739,10 +1847,12 @@ async function saveProject(options = {}) {
   if (!state.projectPath || !state.project) return;
 
   const projectPath = state.projectPath;
-  const project = cloneProject();
-  const saveTask = state.savePromise
-    .catch(() => {})
-    .then(() => window.imageRail.saveProject({ projectPath, project }));
+  const saveTask = enqueueCurrentProjectOperation(projectPath, () => (
+    window.imageRail.saveProject({
+      projectPath,
+      project: cloneProject()
+    })
+  ));
   state.savePromise = saveTask;
 
   try {
@@ -2212,15 +2322,6 @@ function getRenameErrorMessage(error, fallbackMessage) {
   return `${fallbackMessage}。\n\n${message || '请关闭可能占用文件的窗口后再试。'}`;
 }
 
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
-}
-
 function getFolderName(folderPath) {
   return String(folderPath || '')
     .replace(/\\/g, '/')
@@ -2335,6 +2436,7 @@ elements.compareNoteInput.addEventListener('input', () => {
 });
 elements.compareNoteInput.addEventListener('blur', () => {
   state.compareNoteUndo = null;
+  flushScheduledProjectSave();
 });
 elements.compareRevealButton.addEventListener('click', () => {
   const item = findImageById(elements.compareRevealButton.dataset.imageId);
@@ -2342,7 +2444,7 @@ elements.compareRevealButton.addEventListener('click', () => {
 });
 elements.minimizeWindowButton.addEventListener('click', () => window.imageRail?.minimizeWindow?.());
 elements.maximizeWindowButton.addEventListener('click', () => window.imageRail?.toggleMaximizeWindow?.());
-elements.closeWindowButton.addEventListener('click', () => window.imageRail?.closeWindow?.());
+elements.closeWindowButton.addEventListener('click', closeApplication);
 elements.closePreviewButton.addEventListener('click', closePreview);
 elements.previewModal.addEventListener('click', (event) => {
   if (event.target === elements.previewModal) closePreview();
@@ -2421,6 +2523,7 @@ document.addEventListener('drop', () => {
   clearImageDragCancelZone();
 });
 window.addEventListener('blur', () => {
+  flushScheduledProjectSave();
   state.draggedExportImage = false;
   closeContextMenu();
   clearTrackDropIndicator();
@@ -2464,5 +2567,7 @@ window.addEventListener('keydown', (event) => {
     closeProjectModal();
   }
 }, true);
+
+window.imageRail?.onCloseRequested?.(closeApplication).catch(() => {});
 
 render();

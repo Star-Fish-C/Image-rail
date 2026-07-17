@@ -2,26 +2,37 @@
 
 use serde_json::{json, Value};
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::ipc::{InvokeBody, Request};
+use tauri::Emitter;
 
 const DEFAULT_IMAGES_FOLDER: &str = "";
 const DEFAULT_APP_NAME: &str = "ImageRail";
 const IMAGE_EXTENSIONS: [&str; 7] = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".avif"];
+const MAX_REMOTE_IMAGE_BYTES: u64 = 100 * 1024 * 1024;
+static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 type AppResult<T> = Result<T, String>;
 
 fn main() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.emit("imagerail-close-requested", ());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             choose_project_folder,
             list_projects,
             open_existing_project,
             rebind_project_folder_command,
             save_project_command,
+            clear_undo_trash_command,
             restore_project_command,
             rename_project_command,
             delete_project_record_command,
@@ -40,8 +51,17 @@ fn main() {
             toggle_maximize_window_command,
             close_window_command
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running ImageRail");
+        .build(tauri::generate_context!())
+        .expect("error while building ImageRail");
+
+    app.run(|_, event| {
+        if matches!(
+            event,
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+        ) {
+            clear_all_project_undo_trash();
+        }
+    });
 }
 
 fn now_millis() -> u128 {
@@ -72,6 +92,161 @@ fn project_data_dir() -> AppResult<PathBuf> {
 
 fn ensure_dir(path: &Path) -> AppResult<()> {
     fs::create_dir_all(path).map_err(|error| error.to_string())
+}
+
+fn auxiliary_file_path(path: &Path, suffix: &str) -> AppResult<PathBuf> {
+    let file_name = path
+        .file_name()
+        .and_then(|item| item.to_str())
+        .ok_or_else(|| "项目数据文件名不正确".to_string())?;
+    Ok(path.with_file_name(format!("{}{}", file_name, suffix)))
+}
+
+fn recover_project_data_files(dir: &Path) -> AppResult<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+
+    let entries = fs::read_dir(dir)
+        .map_err(|error| error.to_string())?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+
+    for backup_path in entries.iter().filter(|path| {
+        path.file_name()
+            .and_then(|item| item.to_str())
+            .map(|name| name.ends_with(".json.bak"))
+            .unwrap_or(false)
+    }) {
+        let backup_name = backup_path
+            .file_name()
+            .and_then(|item| item.to_str())
+            .unwrap_or_default();
+        let original_path = backup_path.with_file_name(backup_name.trim_end_matches(".bak"));
+        if original_path.exists() {
+            let _ = fs::remove_file(backup_path);
+        } else {
+            fs::rename(backup_path, original_path).map_err(|error| error.to_string())?;
+        }
+    }
+
+    for temporary_path in entries.iter().filter(|path| {
+        path.file_name()
+            .and_then(|item| item.to_str())
+            .map(|name| name.ends_with(".json.tmp"))
+            .unwrap_or(false)
+    }) {
+        let temporary_name = temporary_path
+            .file_name()
+            .and_then(|item| item.to_str())
+            .unwrap_or_default();
+        let original_path = temporary_path.with_file_name(temporary_name.trim_end_matches(".tmp"));
+        if original_path.exists() {
+            let _ = fs::remove_file(temporary_path);
+        } else {
+            fs::rename(temporary_path, original_path).map_err(|error| error.to_string())?;
+        }
+    }
+
+    Ok(())
+}
+
+fn write_project_data_file(path: &Path, data: &[u8]) -> AppResult<()> {
+    let temporary_path = auxiliary_file_path(path, ".tmp")?;
+    let backup_path = auxiliary_file_path(path, ".bak")?;
+    if temporary_path.exists() {
+        fs::remove_file(&temporary_path).map_err(|error| error.to_string())?;
+    }
+
+    let mut temporary_file =
+        fs::File::create(&temporary_path).map_err(|error| error.to_string())?;
+    if let Err(error) = temporary_file
+        .write_all(data)
+        .and_then(|_| temporary_file.sync_all())
+    {
+        drop(temporary_file);
+        let _ = fs::remove_file(&temporary_path);
+        return Err(error.to_string());
+    }
+    drop(temporary_file);
+
+    if backup_path.exists() {
+        fs::remove_file(&backup_path).map_err(|error| error.to_string())?;
+    }
+
+    let had_original = path.exists();
+    if had_original {
+        if let Err(error) = fs::rename(path, &backup_path) {
+            let _ = fs::remove_file(&temporary_path);
+            return Err(error.to_string());
+        }
+    }
+
+    if let Err(error) = fs::rename(&temporary_path, path) {
+        if had_original && backup_path.exists() {
+            let _ = fs::rename(&backup_path, path);
+        }
+        let _ = fs::remove_file(&temporary_path);
+        return Err(error.to_string());
+    }
+
+    if backup_path.exists() {
+        let _ = fs::remove_file(backup_path);
+    }
+    Ok(())
+}
+
+fn rollback_error(operation_error: String, rollback_result: std::io::Result<()>) -> String {
+    match rollback_result {
+        Ok(()) => operation_error,
+        Err(rollback_error) => format!(
+            "{}；自动恢复文件时也失败：{}",
+            operation_error, rollback_error
+        ),
+    }
+}
+
+fn rollback_renames(completed: &[(PathBuf, PathBuf)]) -> std::io::Result<()> {
+    for (old_path, new_path) in completed.iter().rev() {
+        if new_path.exists() && !old_path.exists() {
+            fs::rename(new_path, old_path)?;
+        }
+    }
+    Ok(())
+}
+
+fn move_path_recorded(
+    source: &Path,
+    destination: &Path,
+    completed: &mut Vec<(PathBuf, PathBuf)>,
+) -> AppResult<()> {
+    if let Some(parent) = destination.parent() {
+        ensure_dir(parent)?;
+    }
+    fs::rename(source, destination).map_err(|error| error.to_string())?;
+    completed.push((source.to_path_buf(), destination.to_path_buf()));
+    Ok(())
+}
+
+fn rollback_moves(
+    completed: &[(PathBuf, PathBuf)],
+    created_directories: &[PathBuf],
+) -> std::io::Result<()> {
+    for (source, destination) in completed.iter().rev() {
+        if destination.exists() && !source.exists() {
+            if let Some(parent) = source.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::rename(destination, source)?;
+        }
+    }
+    for directory in created_directories.iter().rev() {
+        if directory.is_dir() && fs::read_dir(directory)?.next().is_none() {
+            fs::remove_dir(directory)?;
+        }
+    }
+    Ok(())
 }
 
 fn unique_child_folder(parent: &Path, base_name: &str) -> PathBuf {
@@ -128,7 +303,16 @@ fn sanitize_image_prefix(value: &str) -> String {
 }
 
 fn make_project_id() -> String {
-    format!("project_{}", now_millis())
+    make_unique_id("project")
+}
+
+fn make_unique_id(prefix: &str) -> String {
+    format!(
+        "{}_{}_{}",
+        prefix,
+        now_millis(),
+        ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 fn get_track_letter(index: usize) -> String {
@@ -171,11 +355,7 @@ fn normalize_track(track: &Value, index: usize) -> Value {
     };
 
     if string_field(&normalized, "id").is_empty() {
-        set_field(
-            &mut normalized,
-            "id",
-            json!(format!("track_{}", now_millis())),
-        );
+        set_field(&mut normalized, "id", json!(make_unique_id("track")));
     }
     set_field(&mut normalized, "letter", json!(letter.clone()));
     if string_field(&normalized, "prefix").is_empty() {
@@ -286,6 +466,36 @@ fn project_images_dir(project_path: &str, project: &Value) -> PathBuf {
     }
 }
 
+fn validate_rebind_folder(project_path: &str, project: &Value) -> AppResult<()> {
+    let images = project
+        .get("tracks")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|track| {
+            track
+                .get("images")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+
+    if images.is_empty() {
+        return Ok(());
+    }
+
+    let has_matching_image = images.iter().any(|image| {
+        let relative_path = string_field(image, "relativePath");
+        !relative_path.is_empty() && Path::new(project_path).join(relative_path).is_file()
+    });
+    if !has_matching_image {
+        return Err("所选文件夹中没有找到这个项目原有的图片，请选择项目文件夹本身".to_string());
+    }
+
+    Ok(())
+}
+
 fn track_folder_name(track: &Value, index: usize) -> String {
     let folder_name = string_field(track, "folderName");
     if folder_name.is_empty() {
@@ -322,11 +532,13 @@ fn save_project(project_path: &str, project: Value) -> AppResult<Value> {
     set_field(&mut project_to_save, "updatedAt", json!(now_iso_like()));
 
     ensure_dir(&project_images_dir(project_path, &project_to_save))?;
-    ensure_dir(&project_data_dir()?)?;
+    let data_dir = project_data_dir()?;
+    ensure_dir(&data_dir)?;
+    recover_project_data_files(&data_dir)?;
 
     let path = get_project_data_path(&project_to_save)?;
     let data = serde_json::to_string_pretty(&project_to_save).map_err(|error| error.to_string())?;
-    fs::write(path, data).map_err(|error| error.to_string())?;
+    write_project_data_file(&path, data.as_bytes())?;
 
     Ok(project_to_save)
 }
@@ -336,6 +548,7 @@ fn read_saved_project_records() -> AppResult<Vec<(String, Value)>> {
     if !dir.exists() {
         return Ok(vec![]);
     }
+    recover_project_data_files(&dir)?;
 
     let mut records = vec![];
     for entry in fs::read_dir(dir).map_err(|error| error.to_string())? {
@@ -366,8 +579,9 @@ fn read_project_from_data_file(project_data_file: &str) -> AppResult<Value> {
         .file_name()
         .and_then(|item| item.to_str())
         .ok_or_else(|| "Project data file name is invalid".to_string())?;
-    let raw = fs::read_to_string(project_data_dir()?.join(safe_name))
-        .map_err(|error| error.to_string())?;
+    let data_dir = project_data_dir()?;
+    recover_project_data_files(&data_dir)?;
+    let raw = fs::read_to_string(data_dir.join(safe_name)).map_err(|error| error.to_string())?;
     let mut project =
         normalize_project(serde_json::from_str(&raw).map_err(|error| error.to_string())?);
     set_field(&mut project, "projectDataFile", json!(safe_name));
@@ -512,10 +726,17 @@ where
 
     let (version, file_name, destination) =
         find_next_image_name(&track_dir, track, &track_prefix, extension)?;
-    writer(&destination)?;
+    if let Err(error) = writer(&destination) {
+        let rollback = if destination.exists() {
+            fs::remove_file(&destination)
+        } else {
+            Ok(())
+        };
+        return Err(rollback_error(error, rollback));
+    }
 
     let image_record = json!({
-        "id": format!("img_{}", now_millis()),
+        "id": make_unique_id("img"),
         "fileName": file_name,
         "version": version,
         "relativePath": relative_path(project_path, &destination),
@@ -530,8 +751,21 @@ where
         .ok_or_else(|| "轨道图片数据不正确".to_string())?
         .push(image_record.clone());
 
-    let saved_project = save_project(project_path, working_project)?;
-    Ok(json!({ "projectPath": project_path, "project": saved_project, "image": image_record }))
+    match save_project(project_path, working_project) {
+        Ok(saved_project) => Ok(json!({
+            "projectPath": project_path,
+            "project": saved_project,
+            "image": image_record
+        })),
+        Err(error) => {
+            let rollback = if destination.exists() {
+                fs::remove_file(&destination)
+            } else {
+                Ok(())
+            };
+            Err(rollback_error(error, rollback))
+        }
+    }
 }
 
 #[tauri::command]
@@ -554,7 +788,13 @@ fn choose_project_folder(project_name: String) -> AppResult<Option<Value>> {
         .and_then(|item| item.to_str())
         .unwrap_or("ImageRail Project");
     set_field(&mut project, "projectName", json!(project_name));
-    let saved_project = save_project(&project_path, project)?;
+    let saved_project = match save_project(&project_path, project) {
+        Ok(saved_project) => saved_project,
+        Err(error) => {
+            let rollback = fs::remove_dir_all(&project_folder);
+            return Err(rollback_error(error, rollback));
+        }
+    };
     Ok(Some(
         json!({ "projectPath": project_path, "project": saved_project }),
     ))
@@ -563,7 +803,7 @@ fn choose_project_folder(project_name: String) -> AppResult<Option<Value>> {
 #[tauri::command]
 fn list_projects() -> AppResult<Vec<Value>> {
     let mut records = read_saved_project_records()?;
-    records.sort_by(|a, b| string_field(&b.1, "updatedAt").cmp(&string_field(&a.1, "updatedAt")));
+    records.sort_by_key(|record| std::cmp::Reverse(string_field(&record.1, "updatedAt")));
 
     Ok(records
         .into_iter()
@@ -606,6 +846,7 @@ fn open_existing_project(project_path: String, project_data_file: String) -> App
     if !Path::new(&project_path).exists() {
         return Err("项目文件夹不存在，请重新绑定项目位置".to_string());
     }
+    clear_undo_trash(&project_path)?;
     ensure_dir(&project_images_dir(&project_path, &project))?;
     Ok(json!({ "projectPath": project_path, "project": project }))
 }
@@ -621,6 +862,8 @@ fn rebind_project_folder_command(project_data_file: String) -> AppResult<Option<
 
     let project_path = project_folder.to_string_lossy().to_string();
     let mut project = read_project_from_data_file(&project_data_file)?;
+    validate_rebind_folder(&project_path, &project)?;
+    clear_undo_trash(&project_path)?;
     let project_name = project_folder
         .file_name()
         .and_then(|item| item.to_str())
@@ -640,6 +883,68 @@ fn save_project_command(project_path: String, project: Value) -> AppResult<Value
 
 fn undo_trash_dir(project_path: &str) -> PathBuf {
     Path::new(project_path).join(".imagerail-trash")
+}
+
+fn clear_undo_trash(project_path: &str) -> AppResult<()> {
+    let trash_dir = undo_trash_dir(project_path);
+    if trash_dir.exists() {
+        fs::remove_dir_all(trash_dir).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn clear_undo_trash_command(project_path: String) -> AppResult<()> {
+    clear_undo_trash(&project_path)
+}
+
+fn clear_all_project_undo_trash() {
+    let Ok(records) = read_saved_project_records() else {
+        return;
+    };
+
+    for (_, project) in records {
+        let project_path = string_field(&project, "projectFolderPath");
+        if !project_path.is_empty() {
+            let _ = clear_undo_trash(&project_path);
+        }
+    }
+}
+
+fn remove_path(path: &Path) -> AppResult<()> {
+    if path.is_dir() {
+        fs::remove_dir_all(path).map_err(|error| error.to_string())
+    } else if path.exists() {
+        fs::remove_file(path).map_err(|error| error.to_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn retain_only_undo_entry(project_path: &str, retained_entry: &Path) -> AppResult<()> {
+    let trash_root = undo_trash_dir(project_path);
+    if !trash_root.exists() {
+        return Ok(());
+    }
+
+    for category in fs::read_dir(&trash_root).map_err(|error| error.to_string())? {
+        let category_path = category.map_err(|error| error.to_string())?.path();
+        if !retained_entry.starts_with(&category_path) {
+            remove_path(&category_path)?;
+            continue;
+        }
+
+        if category_path.is_dir() {
+            for entry in fs::read_dir(&category_path).map_err(|error| error.to_string())? {
+                let entry_path = entry.map_err(|error| error.to_string())?.path();
+                if entry_path != retained_entry {
+                    remove_path(&entry_path)?;
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn safe_undo_id(value: &str) -> String {
@@ -663,26 +968,6 @@ fn move_to_undo_trash(source: &Path, trash_dir: &Path) -> AppResult<()> {
     fs::rename(source, trash_dir).map_err(|error| error.to_string())
 }
 
-fn restore_trashed_file(trash_dir: &Path, destination: &Path) -> AppResult<bool> {
-    if !trash_dir.is_dir() {
-        return Ok(false);
-    }
-    let source = fs::read_dir(trash_dir)
-        .map_err(|error| error.to_string())?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .find(|path| path.is_file());
-    let Some(source) = source else {
-        return Ok(false);
-    };
-    if let Some(parent) = destination.parent() {
-        ensure_dir(parent)?;
-    }
-    fs::rename(source, destination).map_err(|error| error.to_string())?;
-    let _ = fs::remove_dir(trash_dir);
-    Ok(true)
-}
-
 #[tauri::command]
 fn restore_project_command(
     project_path: String,
@@ -702,113 +987,139 @@ fn restore_project_command(
         .cloned()
         .unwrap_or_default();
     let trash_root = undo_trash_dir(&project_path);
+    let current_images_dir = project_images_dir(&project_path, &current);
+    let previous_images_dir = project_images_dir(&project_path, &previous);
+    let mut completed_moves = vec![];
+    let mut created_directories = vec![];
 
-    // Align track folders first so image paths below use the restored folder names.
-    for (current_index, current_track) in current_tracks.iter().enumerate() {
-        let track_id = string_field(current_track, "id");
-        let current_folder = track_folder_name(current_track, current_index);
-        let current_path = Path::new(&project_path).join(&current_folder);
-        if let Some((previous_index, previous_track)) = previous_tracks
-            .iter()
-            .enumerate()
-            .find(|(_, track)| string_field(track, "id") == track_id)
-        {
-            let previous_folder = track_folder_name(previous_track, previous_index);
-            let previous_path = Path::new(&project_path).join(&previous_folder);
-            if current_path != previous_path && current_path.exists() && !previous_path.exists() {
-                fs::rename(&current_path, &previous_path).map_err(|error| error.to_string())?;
-            }
-        } else {
-            let trash_path = trash_root.join("tracks").join(safe_undo_id(&track_id));
-            move_to_undo_trash(&current_path, &trash_path)?;
-        }
-    }
-
-    for (previous_index, previous_track) in previous_tracks.iter().enumerate() {
-        let track_id = string_field(previous_track, "id");
-        if current_tracks
-            .iter()
-            .any(|track| string_field(track, "id") == track_id)
-        {
-            continue;
-        }
-        let destination =
-            Path::new(&project_path).join(track_folder_name(previous_track, previous_index));
-        let trash_path = trash_root.join("tracks").join(safe_undo_id(&track_id));
-        if trash_path.exists() && !destination.exists() {
-            fs::rename(&trash_path, &destination).map_err(|error| error.to_string())?;
-        } else {
-            ensure_dir(&destination)?;
-        }
-    }
-
-    for (previous_index, previous_track) in previous_tracks.iter().enumerate() {
-        let track_id = string_field(previous_track, "id");
-        let Some(current_track) = current_tracks
-            .iter()
-            .find(|track| string_field(track, "id") == track_id)
-        else {
-            continue;
-        };
-        let folder = track_folder_name(previous_track, previous_index);
-        let current_images = current_track
-            .get("images")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let previous_images = previous_track
-            .get("images")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-
-        for current_image in &current_images {
-            let image_id = string_field(current_image, "id");
-            let current_name = string_field(current_image, "fileName");
-            let current_path = Path::new(&project_path).join(&folder).join(&current_name);
-            if let Some(previous_image) = previous_images
+    let result = (|| -> AppResult<Value> {
+        // Align track folders first so image paths below use the restored folder names.
+        for (current_index, current_track) in current_tracks.iter().enumerate() {
+            let track_id = string_field(current_track, "id");
+            let current_folder = track_folder_name(current_track, current_index);
+            let current_path = current_images_dir.join(&current_folder);
+            if let Some((previous_index, previous_track)) = previous_tracks
                 .iter()
-                .find(|image| string_field(image, "id") == image_id)
+                .enumerate()
+                .find(|(_, track)| string_field(track, "id") == track_id)
             {
-                let previous_path =
-                    Path::new(&project_path).join(string_field(previous_image, "relativePath"));
+                let previous_folder = track_folder_name(previous_track, previous_index);
+                let previous_path = previous_images_dir.join(&previous_folder);
                 if current_path != previous_path && current_path.exists() && !previous_path.exists()
                 {
-                    fs::rename(&current_path, &previous_path).map_err(|error| error.to_string())?;
+                    move_path_recorded(&current_path, &previous_path, &mut completed_moves)?;
                 }
-            } else {
-                let trash_path = trash_root.join("images").join(safe_undo_id(&image_id));
-                if current_path.exists() {
+            } else if current_path.exists() {
+                let trash_path = trash_root.join("tracks").join(safe_undo_id(&track_id));
+                if trash_path.exists() {
+                    fs::remove_dir_all(&trash_path).map_err(|error| error.to_string())?;
+                }
+                move_path_recorded(&current_path, &trash_path, &mut completed_moves)?;
+            }
+        }
+
+        for (previous_index, previous_track) in previous_tracks.iter().enumerate() {
+            let track_id = string_field(previous_track, "id");
+            if current_tracks
+                .iter()
+                .any(|track| string_field(track, "id") == track_id)
+            {
+                continue;
+            }
+            let destination =
+                previous_images_dir.join(track_folder_name(previous_track, previous_index));
+            let trash_path = trash_root.join("tracks").join(safe_undo_id(&track_id));
+            if trash_path.exists() && !destination.exists() {
+                move_path_recorded(&trash_path, &destination, &mut completed_moves)?;
+            } else if !destination.exists() {
+                ensure_dir(&destination)?;
+                created_directories.push(destination);
+            }
+        }
+
+        for previous_track in &previous_tracks {
+            let track_id = string_field(previous_track, "id");
+            let Some(current_track) = current_tracks
+                .iter()
+                .find(|track| string_field(track, "id") == track_id)
+            else {
+                continue;
+            };
+            let current_images = current_track
+                .get("images")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let previous_images = previous_track
+                .get("images")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+
+            for current_image in &current_images {
+                let image_id = string_field(current_image, "id");
+                let current_name = string_field(current_image, "fileName");
+                let current_path =
+                    Path::new(&project_path).join(string_field(current_image, "relativePath"));
+                if let Some(previous_image) = previous_images
+                    .iter()
+                    .find(|image| string_field(image, "id") == image_id)
+                {
+                    let previous_path =
+                        Path::new(&project_path).join(string_field(previous_image, "relativePath"));
+                    if current_path != previous_path
+                        && current_path.exists()
+                        && !previous_path.exists()
+                    {
+                        move_path_recorded(&current_path, &previous_path, &mut completed_moves)?;
+                    }
+                } else if current_path.exists() {
+                    let trash_path = trash_root.join("images").join(safe_undo_id(&image_id));
                     if trash_path.exists() {
                         fs::remove_dir_all(&trash_path).map_err(|error| error.to_string())?;
                     }
                     ensure_dir(&trash_path)?;
                     let trash_file = trash_path.join(&current_name);
-                    if trash_file.exists() {
-                        fs::remove_file(&trash_file).map_err(|error| error.to_string())?;
+                    move_path_recorded(&current_path, &trash_file, &mut completed_moves)?;
+                }
+            }
+
+            for previous_image in &previous_images {
+                let image_id = string_field(previous_image, "id");
+                if current_images
+                    .iter()
+                    .any(|image| string_field(image, "id") == image_id)
+                {
+                    continue;
+                }
+                let destination =
+                    Path::new(&project_path).join(string_field(previous_image, "relativePath"));
+                let trash_path = trash_root.join("images").join(safe_undo_id(&image_id));
+                if trash_path.is_dir() && !destination.exists() {
+                    let source = fs::read_dir(&trash_path)
+                        .map_err(|error| error.to_string())?
+                        .filter_map(Result::ok)
+                        .map(|entry| entry.path())
+                        .find(|path| path.is_file());
+                    if let Some(source) = source {
+                        move_path_recorded(&source, &destination, &mut completed_moves)?;
                     }
-                    fs::rename(&current_path, trash_file).map_err(|error| error.to_string())?;
                 }
             }
         }
 
-        for previous_image in &previous_images {
-            let image_id = string_field(previous_image, "id");
-            if current_images
-                .iter()
-                .any(|image| string_field(image, "id") == image_id)
-            {
-                continue;
-            }
-            let destination =
-                Path::new(&project_path).join(string_field(previous_image, "relativePath"));
-            let trash_path = trash_root.join("images").join(safe_undo_id(&image_id));
-            restore_trashed_file(&trash_path, &destination)?;
-        }
-    }
+        let saved_project = save_project(&project_path, previous.clone())?;
+        let _ = clear_undo_trash(&project_path);
+        Ok(json!({ "projectPath": project_path, "project": saved_project }))
+    })();
 
-    let saved_project = save_project(&project_path, previous)?;
-    Ok(json!({ "projectPath": project_path, "project": saved_project }))
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) => Err(rollback_error(
+            error,
+            rollback_moves(&completed_moves, &created_directories),
+        )),
+    }
 }
 
 #[tauri::command]
@@ -845,7 +1156,16 @@ fn rename_project_command(
     let final_project_path_text = final_project_path.to_string_lossy().to_string();
     let mut working_project = normalize_project(project);
     set_field(&mut working_project, "projectName", json!(clean_name));
-    let saved_project = save_project(&final_project_path_text, working_project)?;
+    let saved_project = match save_project(&final_project_path_text, working_project) {
+        Ok(saved_project) => saved_project,
+        Err(error) => {
+            if final_project_path != old_project_path {
+                let rollback = fs::rename(&final_project_path, old_project_path);
+                return Err(rollback_error(error, rollback));
+            }
+            return Err(error);
+        }
+    };
     Ok(json!({ "projectPath": final_project_path_text, "project": saved_project }))
 }
 
@@ -879,7 +1199,9 @@ fn rename_track_folder_command(
     if old_folder_path != new_folder_path && new_folder_path.exists() {
         return Err(format!("Already exists: {}", clean_folder_name));
     }
-    if old_folder_path.exists() && old_folder_path != new_folder_path {
+    let renamed_folder = old_folder_path.exists() && old_folder_path != new_folder_path;
+    let created_folder = !old_folder_path.exists() && !new_folder_path.exists();
+    if renamed_folder {
         fs::rename(&old_folder_path, &new_folder_path).map_err(|error| error.to_string())?;
     } else {
         ensure_dir(&new_folder_path)?;
@@ -907,7 +1229,19 @@ fn rename_track_folder_command(
         }
     }
 
-    let saved_project = save_project(&project_path, working_project)?;
+    let saved_project = match save_project(&project_path, working_project) {
+        Ok(saved_project) => saved_project,
+        Err(error) => {
+            let rollback = if renamed_folder && new_folder_path.exists() {
+                fs::rename(&new_folder_path, &old_folder_path)
+            } else if created_folder && new_folder_path.exists() {
+                fs::remove_dir(&new_folder_path)
+            } else {
+                Ok(())
+            };
+            return Err(rollback_error(error, rollback));
+        }
+    };
     Ok(json!({ "projectPath": project_path, "project": saved_project }))
 }
 
@@ -917,6 +1251,12 @@ fn delete_project_record_command(project_data_file: String) -> AppResult<Value> 
         .file_name()
         .and_then(|item| item.to_str())
     {
+        if let Ok(project) = read_project_from_data_file(file_name) {
+            let project_path = string_field(&project, "projectFolderPath");
+            if !project_path.is_empty() {
+                let _ = clear_undo_trash(&project_path);
+            }
+        }
         let path = project_data_dir()?.join(file_name);
         if path.exists() {
             fs::remove_file(path).map_err(|error| error.to_string())?;
@@ -970,6 +1310,7 @@ fn delete_track_folder_command(
         .ok_or_else(|| "没有找到目标轨道".to_string())?;
     let folder_name = track_folder_name(&tracks[track_index], track_index);
     let track_dir = images_dir.join(folder_name);
+    let mut moved_track = None;
 
     if track_dir.exists() {
         let canonical_track_dir = track_dir
@@ -985,10 +1326,30 @@ fn delete_track_folder_command(
             .join("tracks")
             .join(safe_undo_id(&track_id));
         move_to_undo_trash(&canonical_track_dir, &trash_dir)?;
+        moved_track = Some((trash_dir, canonical_track_dir));
     }
 
     tracks.remove(track_index);
-    let saved_project = save_project(&project_path, working_project)?;
+    let saved_project = match save_project(&project_path, working_project) {
+        Ok(saved_project) => saved_project,
+        Err(error) => {
+            let rollback = if let Some((trash_dir, original_dir)) = &moved_track {
+                if trash_dir.exists() && !original_dir.exists() {
+                    fs::rename(trash_dir, original_dir)
+                } else {
+                    Ok(())
+                }
+            } else {
+                Ok(())
+            };
+            return Err(rollback_error(error, rollback));
+        }
+    };
+    if let Some((trash_dir, _)) = &moved_track {
+        let _ = retain_only_undo_entry(&project_path, trash_dir);
+    } else {
+        let _ = clear_undo_trash(&project_path);
+    }
     Ok(json!({ "projectPath": project_path, "project": saved_project }))
 }
 
@@ -1018,6 +1379,7 @@ fn delete_image_file_command(
         .ok_or_else(|| "没有找到目标图片".to_string())?;
     let image = images[image_index].clone();
     let relative_path = string_field(&image, "relativePath");
+    let mut moved_image = None;
 
     if !relative_path.is_empty() {
         let image_path = project_scoped_file_path(&project_path, &relative_path)?;
@@ -1037,12 +1399,35 @@ fn delete_image_file_command(
             if trash_file.exists() {
                 fs::remove_file(&trash_file).map_err(|error| error.to_string())?;
             }
-            fs::rename(&image_path, trash_file).map_err(|error| error.to_string())?;
+            fs::rename(&image_path, &trash_file).map_err(|error| error.to_string())?;
+            moved_image = Some((trash_file, image_path, trash_dir));
         }
     }
 
     images.remove(image_index);
-    let saved_project = save_project(&project_path, working_project)?;
+    let saved_project = match save_project(&project_path, working_project) {
+        Ok(saved_project) => saved_project,
+        Err(error) => {
+            let rollback = (|| -> std::io::Result<()> {
+                if let Some((trash_file, original_file, trash_dir)) = &moved_image {
+                    if let Some(parent) = original_file.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    if trash_file.exists() && !original_file.exists() {
+                        fs::rename(trash_file, original_file)?;
+                    }
+                    let _ = fs::remove_dir(trash_dir);
+                }
+                Ok(())
+            })();
+            return Err(rollback_error(error, rollback));
+        }
+    };
+    if let Some((_, _, trash_dir)) = &moved_image {
+        let _ = retain_only_undo_entry(&project_path, trash_dir);
+    } else {
+        let _ = clear_undo_trash(&project_path);
+    }
     Ok(json!({ "projectPath": project_path, "project": saved_project }))
 }
 
@@ -1127,7 +1512,7 @@ fn toggle_maximize_window_command(window: tauri::Window) -> AppResult<()> {
 
 #[tauri::command]
 fn close_window_command(window: tauri::Window) -> AppResult<()> {
-    window.close().map_err(|error| error.to_string())
+    window.destroy().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1162,7 +1547,8 @@ fn add_image_raw_file_data_to_track_command(request: Request<'_>) -> AppResult<V
     let extension =
         image_extension_from_name(&file_name).if_empty(image_extension_from_mime(&mime_type));
     let file_data = match request.body() {
-        InvokeBody::Raw(bytes) => bytes.clone(),
+        InvokeBody::Raw(bytes) if bytes.len() as u64 <= MAX_REMOTE_IMAGE_BYTES => bytes.clone(),
+        InvokeBody::Raw(_) => return Err("图片超过 100 MB，已停止导入".to_string()),
         InvokeBody::Json(_) => return Err("Image data must be sent as raw bytes".to_string()),
     };
 
@@ -1186,11 +1572,23 @@ fn add_image_url_to_track_command(
     let content_type = response.header("content-type").unwrap_or("");
     let extension = image_extension_from_mime(content_type.split(';').next().unwrap_or(""))
         .if_empty(image_extension_from_url(&url));
+    if response
+        .header("content-length")
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|size| size > MAX_REMOTE_IMAGE_BYTES)
+        .unwrap_or(false)
+    {
+        return Err("网页图片超过 100 MB，已停止导入".to_string());
+    }
     let mut bytes = Vec::new();
     response
         .into_reader()
+        .take(MAX_REMOTE_IMAGE_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > MAX_REMOTE_IMAGE_BYTES {
+        return Err("网页图片超过 100 MB，已停止导入".to_string());
+    }
 
     add_image_with_writer(
         &project_path,
@@ -1252,10 +1650,17 @@ fn rename_track_prefix_command(
         ));
     }
 
+    let mut completed_renames = vec![];
     for (image_index, old_absolute, new_absolute, new_file_name, new_relative, new_version) in jobs
     {
         if old_absolute != new_absolute {
-            fs::rename(old_absolute, new_absolute).map_err(|error| error.to_string())?;
+            if let Err(error) = fs::rename(&old_absolute, &new_absolute) {
+                return Err(rollback_error(
+                    error.to_string(),
+                    rollback_renames(&completed_renames),
+                ));
+            }
+            completed_renames.push((old_absolute, new_absolute));
         }
         if let Some(image) = images.get_mut(image_index) {
             set_field(image, "fileName", json!(new_file_name));
@@ -1265,7 +1670,12 @@ fn rename_track_prefix_command(
     }
 
     set_field(track, "prefix", json!(clean_prefix));
-    let saved_project = save_project(&project_path, working_project)?;
+    let saved_project = match save_project(&project_path, working_project) {
+        Ok(saved_project) => saved_project,
+        Err(error) => {
+            return Err(rollback_error(error, rollback_renames(&completed_renames)));
+        }
+    };
     Ok(json!({ "projectPath": project_path, "project": saved_project }))
 }
 
@@ -1320,7 +1730,8 @@ fn rename_image_file_command(
         return Err(format!("Already exists: {}", new_file_name));
     }
 
-    if old_path != new_path {
+    let renamed_file = old_path != new_path;
+    if renamed_file {
         fs::rename(&old_path, &new_path).map_err(|error| error.to_string())?;
     }
 
@@ -1329,6 +1740,125 @@ fn rename_image_file_command(
         set_field(image, "relativePath", json!(new_relative));
     }
 
-    let saved_project = save_project(&project_path, working_project)?;
+    let saved_project = match save_project(&project_path, working_project) {
+        Ok(saved_project) => saved_project,
+        Err(error) => {
+            let rollback = if renamed_file && new_path.exists() && !old_path.exists() {
+                fs::rename(&new_path, &old_path)
+            } else {
+                Ok(())
+            };
+            return Err(rollback_error(error, rollback));
+        }
+    };
     Ok(json!({ "projectPath": project_path, "project": saved_project }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_directory(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("imagerail_test_{}_{}", name, now_millis()))
+    }
+
+    #[test]
+    fn sanitizes_windows_file_name_characters() {
+        assert_eq!(sanitize_file_name("a:b/c\\d*e?.png"), "a_b_c_d_e_.png");
+    }
+
+    #[test]
+    fn accepts_only_supported_image_extensions() {
+        assert_eq!(image_extension_from_name("sample.JPEG"), ".jpeg");
+        assert_eq!(image_extension_from_name("sample.txt"), "");
+    }
+
+    #[test]
+    fn creates_unique_ids_for_rapid_operations() {
+        let first = make_unique_id("img");
+        let second = make_unique_id("img");
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn writes_project_data_with_no_leftover_backup() {
+        let directory = test_directory("atomic_write");
+        fs::create_dir_all(&directory).unwrap();
+        let project_file = directory.join("project_test.json");
+
+        write_project_data_file(&project_file, br#"{"version":1}"#).unwrap();
+        write_project_data_file(&project_file, br#"{"version":2}"#).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&project_file).unwrap(),
+            r#"{"version":2}"#
+        );
+        assert!(!auxiliary_file_path(&project_file, ".tmp").unwrap().exists());
+        assert!(!auxiliary_file_path(&project_file, ".bak").unwrap().exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn recovers_project_data_from_backup() {
+        let directory = test_directory("backup_recovery");
+        fs::create_dir_all(&directory).unwrap();
+        let project_file = directory.join("project_test.json");
+        let backup_file = auxiliary_file_path(&project_file, ".bak").unwrap();
+        fs::write(&backup_file, br#"{"version":1}"#).unwrap();
+
+        recover_project_data_files(&directory).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&project_file).unwrap(),
+            r#"{"version":1}"#
+        );
+        assert!(!backup_file.exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn rolls_back_recorded_file_moves() {
+        let directory = test_directory("move_rollback");
+        fs::create_dir_all(&directory).unwrap();
+        let original = directory.join("original.png");
+        let moved = directory.join("moved.png");
+        fs::write(&original, b"image").unwrap();
+        let mut completed = vec![];
+
+        move_path_recorded(&original, &moved, &mut completed).unwrap();
+        rollback_moves(&completed, &[]).unwrap();
+
+        assert!(original.exists());
+        assert!(!moved.exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn keeps_legacy_images_folder_in_project_paths() {
+        let project = json!({ "imagesFolderName": "images" });
+        assert_eq!(
+            project_images_dir("C:/project", &project),
+            Path::new("C:/project").join("images")
+        );
+    }
+
+    #[test]
+    fn retains_only_the_latest_undo_entry() {
+        let directory = test_directory("single_undo_entry");
+        let trash_root = undo_trash_dir(directory.to_str().unwrap());
+        let old_image = trash_root.join("images").join("old_image");
+        let current_image = trash_root.join("images").join("current_image");
+        let old_track = trash_root.join("tracks").join("old_track");
+        fs::create_dir_all(&old_image).unwrap();
+        fs::create_dir_all(&current_image).unwrap();
+        fs::create_dir_all(&old_track).unwrap();
+        fs::write(current_image.join("image.png"), b"image").unwrap();
+
+        retain_only_undo_entry(directory.to_str().unwrap(), &current_image).unwrap();
+
+        assert!(current_image.exists());
+        assert!(!old_image.exists());
+        assert!(!old_track.exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
 }
