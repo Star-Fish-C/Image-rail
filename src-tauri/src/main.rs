@@ -1290,11 +1290,19 @@ fn project_scoped_file_path(project_path: &str, relative_path: &str) -> AppResul
 }
 
 #[tauri::command]
-fn delete_track_folder_command(
+async fn delete_track_folder_command(
     project_path: String,
     project: Value,
     track_id: String,
 ) -> AppResult<Value> {
+    tauri::async_runtime::spawn_blocking(move || {
+        delete_track_folder(project_path, project, track_id)
+    })
+    .await
+    .map_err(|error| format!("后台删除轨道任务失败：{}", error))?
+}
+
+fn delete_track_folder(project_path: String, project: Value, track_id: String) -> AppResult<Value> {
     let mut working_project = normalize_project(project);
     let project_root = Path::new(&project_path)
         .canonicalize()
@@ -1354,7 +1362,20 @@ fn delete_track_folder_command(
 }
 
 #[tauri::command]
-fn delete_image_file_command(
+async fn delete_image_file_command(
+    project_path: String,
+    project: Value,
+    track_id: String,
+    image_id: String,
+) -> AppResult<Value> {
+    tauri::async_runtime::spawn_blocking(move || {
+        delete_image_file(project_path, project, track_id, image_id)
+    })
+    .await
+    .map_err(|error| format!("后台删除图片任务失败：{}", error))?
+}
+
+fn delete_image_file(
     project_path: String,
     project: Value,
     track_id: String,

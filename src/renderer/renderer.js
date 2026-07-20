@@ -309,7 +309,7 @@ function captureUndo(label, options = {}) {
   return {
     label,
     projectPath: state.projectPath,
-    project: cloneProject(),
+    project: options.projectSnapshot || cloneProject(),
     preserveTrash: options.preserveTrash === true
   };
 }
@@ -1442,21 +1442,8 @@ async function deleteContextMenuImage() {
 
   if (!image || !trackId) return;
 
-  const projectPath = state.projectPath;
   try {
-    await enqueueCurrentProjectOperation(projectPath, async () => {
-      const undo = captureUndo('删除图片', { preserveTrash: true });
-      const result = await window.imageRail.deleteImageFile({
-        projectPath,
-        project: cloneProject(),
-        trackId,
-        imageId: image.id
-      });
-      if (state.selectedImageId === image.id) state.selectedImageId = '';
-      if (state.pinnedCompareImageId === image.id) state.pinnedCompareImageId = '';
-      setProjectFromResult(result);
-      commitUndo(undo);
-    });
+    await performImageDeletion(trackId, image.id);
   } catch (error) {
     showAppMessage(getRenameErrorMessage(error, '删除图片失败'));
   }
@@ -1769,6 +1756,80 @@ function updateImage(trackId, imageId, patch) {
   renderComparePanel();
 }
 
+function applyOptimisticImageRemoval(trackId, imageId) {
+  const track = findTrack(trackId);
+  if (!track) return false;
+
+  const imageIndex = track.images.findIndex((image) => image.id === imageId);
+  if (imageIndex < 0) return false;
+  track.images.splice(imageIndex, 1);
+
+  if (state.selectedImageId === imageId) state.selectedImageId = '';
+  if (state.pinnedCompareImageId === imageId) state.pinnedCompareImageId = '';
+  clearPendingDelete();
+
+  const trackElement = elements.tracks.querySelector(`.track[data-track-id="${CSS.escape(trackId)}"]`);
+  const lane = trackElement?.querySelector('.track-lane');
+  lane?.querySelector(`.image-card[data-image-id="${CSS.escape(imageId)}"]`)?.remove();
+
+  if (lane && track.images.length === 0 && !lane.querySelector('.drop-hint')) {
+    const hint = document.createElement('div');
+    hint.className = 'drop-hint';
+    hint.textContent = '把图片拖到这里';
+    lane.appendChild(hint);
+  }
+
+  const trackIndex = state.project.tracks.findIndex((item) => item.id === trackId);
+  const meta = trackElement?.querySelector('.track-label > span');
+  if (meta) {
+    meta.textContent = `${track.images.length} 张图片 · 文件夹 ${track.folderName || `track_${track.letter || getTrackLetter(trackIndex)}`} · 前缀 ${track.prefix || track.letter || getTrackLetter(trackIndex)}`;
+  }
+
+  renderComparePanel();
+  requestAnimationFrame(() => {
+    updateTrackNavigationButtons(lane);
+    updateBoardNavigationButtons();
+  });
+  return true;
+}
+
+async function performImageDeletion(trackId, imageId) {
+  const projectPath = state.projectPath;
+
+  await enqueueCurrentProjectOperation(projectPath, async () => {
+    rememberTrackScrollPositions();
+    const selectedImageId = state.selectedImageId;
+    const pinnedCompareImageId = state.pinnedCompareImageId;
+    const projectSnapshot = cloneProject();
+    const undo = captureUndo('删除图片', {
+      preserveTrash: true,
+      projectSnapshot
+    });
+
+    if (!applyOptimisticImageRemoval(trackId, imageId)) {
+      throw new Error('没有找到目标图片');
+    }
+
+    try {
+      const result = await window.imageRail.deleteImageFile({
+        projectPath,
+        project: projectSnapshot,
+        trackId,
+        imageId
+      });
+      state.projectPath = result.projectPath || state.projectPath;
+      state.project = result.project;
+      commitUndo(undo);
+    } catch (error) {
+      state.project = projectSnapshot;
+      state.selectedImageId = selectedImageId;
+      state.pinnedCompareImageId = pinnedCompareImageId;
+      render();
+      throw error;
+    }
+  });
+}
+
 async function deleteImageFile(trackId, imageId, button) {
   const track = findTrack(trackId);
   if (!track) return;
@@ -1781,25 +1842,8 @@ async function deleteImageFile(trackId, imageId, button) {
     return;
   }
 
-  const projectPath = state.projectPath;
   try {
-    rememberTrackScrollPositions();
-    await enqueueCurrentProjectOperation(projectPath, async () => {
-      const undo = captureUndo('删除图片', { preserveTrash: true });
-      const result = await window.imageRail.deleteImageFile({
-        projectPath,
-        project: cloneProject(),
-        trackId,
-        imageId
-      });
-      clearPendingDelete();
-      state.projectPath = result.projectPath || state.projectPath;
-      state.project = result.project;
-      commitUndo(undo);
-      if (state.selectedImageId === imageId) state.selectedImageId = '';
-      if (state.pinnedCompareImageId === imageId) state.pinnedCompareImageId = '';
-      render();
-    });
+    await performImageDeletion(trackId, imageId);
   } catch (error) {
     clearPendingDelete();
     resetInlineDeleteConfirmations();
