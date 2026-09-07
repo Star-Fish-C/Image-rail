@@ -59,6 +59,21 @@ https://github.com/Star-Fish-C/Image-rail/releases
 - CSS
 - JavaScript
 
+开发启动：
+
+```sh
+npm ci
+npm start
+```
+
+前端回归测试仅需要 Node.js 18 或更新版本，无需安装 Rust：
+
+```sh
+npm test
+```
+
+测试覆盖自动保存期间继续编辑、保存失败后的关闭与重试、轨道名称分配及图片卡片更新。启动桌面应用或打包仍需要 Rust 和 Tauri 的系统构建依赖。
+
 
 
 ## 贡献者

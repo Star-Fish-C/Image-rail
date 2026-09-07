@@ -39,6 +39,7 @@ const state = {
   compareNoteUndo: null,
   projectOperationPromise: Promise.resolve(),
   savePromise: Promise.resolve(),
+  saveError: null,
   pendingSaveTimer: null,
   activeCompareViewport: null,
   comparePanelWidth: Number(localStorage.getItem(COMPARE_WIDTH_STORAGE_KEY)) || 390
@@ -278,7 +279,7 @@ function scheduleProjectSave(options = {}) {
 }
 
 function flushScheduledProjectSave() {
-  if (state.pendingSaveTimer) {
+  if (state.pendingSaveTimer || state.saveError) {
     window.clearTimeout(state.pendingSaveTimer);
     state.pendingSaveTimer = null;
     return saveProject({ silent: true });
@@ -289,6 +290,8 @@ function flushScheduledProjectSave() {
 async function waitForProjectOperations() {
   await flushScheduledProjectSave();
   await state.projectOperationPromise.catch(() => {});
+  // A later successful operation must not hide an unsuccessful save.
+  await state.savePromise;
 }
 
 async function closeApplication() {
@@ -377,8 +380,12 @@ function setProjectFromResult(result) {
 
 async function openProjectModal() {
   elements.projectModal.hidden = false;
-  await waitForProjectOperations();
-  await renderProjectList();
+  try {
+    await waitForProjectOperations();
+    await renderProjectList();
+  } catch (error) {
+    showAppMessage(getErrorText(error, '保存项目失败'));
+  }
 }
 
 function closeProjectModal() {
@@ -654,9 +661,11 @@ function reconcileTrackImages(trackElement, track) {
   const lane = trackElement.querySelector('.track-lane');
   if (!lane) return;
 
+  const cardsById = new Map();
   const desiredImageIds = new Set(track.images.map((image) => image.id));
   lane.querySelectorAll('.image-card[data-image-id]').forEach((card) => {
     if (!desiredImageIds.has(card.dataset.imageId)) card.remove();
+    else cardsById.set(card.dataset.imageId, card);
   });
 
   const hint = lane.querySelector('.drop-hint');
@@ -673,7 +682,7 @@ function reconcileTrackImages(trackElement, track) {
   hint?.remove();
   track.images.forEach((image, imageIndex) => {
     const key = imageCardRenderKey(track.id, image);
-    let card = lane.querySelector(`.image-card[data-image-id="${CSS.escape(image.id)}"]`);
+    let card = cardsById.get(image.id);
     if (!card || card.dataset.renderKey !== key) {
       const replacement = createImageCard(track.id, image);
       if (card) card.replaceWith(replacement);
@@ -686,13 +695,15 @@ function reconcileTrackImages(trackElement, track) {
 }
 
 function reconcileTracks() {
+  const tracksById = new Map();
   const desiredTrackIds = new Set(state.project.tracks.map((track) => track.id));
   elements.tracks.querySelectorAll('.track[data-track-id]').forEach((trackElement) => {
     if (!desiredTrackIds.has(trackElement.dataset.trackId)) trackElement.remove();
+    else tracksById.set(trackElement.dataset.trackId, trackElement);
   });
 
   state.project.tracks.forEach((track, trackIndex) => {
-    let trackElement = elements.tracks.querySelector(`.track[data-track-id="${CSS.escape(track.id)}"]`);
+    let trackElement = tracksById.get(track.id);
     if (!trackElement) {
       trackElement = createTrackElement(track, trackIndex);
     } else {
@@ -992,6 +1003,8 @@ function createImageCard(trackId, image) {
   });
 
   const img = document.createElement('img');
+  img.loading = 'lazy';
+  img.decoding = 'async';
   img.src = imageUrl;
   img.alt = image.fileName;
   thumbButton.appendChild(img);
@@ -1554,7 +1567,12 @@ async function handleDrop(event, trackId) {
   const files = droppedFiles.length ? droppedFiles : fallbackFiles;
   const imageUrl = getDraggedImageUrl(event.dataTransfer);
 
-  await waitForProjectOperations();
+  try {
+    await waitForProjectOperations();
+  } catch (error) {
+    showAppMessage(getErrorText(error, '保存项目失败，已取消导入'));
+    return;
+  }
   rememberTrackScrollPositions();
   const undo = captureUndo('导入图片');
   let importedCount = 0;
@@ -1615,7 +1633,15 @@ function createTrack() {
   if (!state.project) return;
 
   const undo = captureUndo('新建轨道');
-  const index = state.project.tracks.length;
+  const usedLetters = new Set(state.project.tracks.map((track) => String(track.letter || '').toLowerCase()));
+  const usedFolders = new Set(state.project.tracks.map((track, index) => (
+    String(track.folderName || `track_${track.letter || getTrackLetter(index)}`).toLowerCase()
+  )));
+  let index = state.project.tracks.length;
+  while (usedLetters.has(getTrackLetter(index).toLowerCase())
+    || usedFolders.has(`track_${getTrackLetter(index)}`.toLowerCase())) {
+    index += 1;
+  }
   const letter = getTrackLetter(index);
   state.project.tracks.push({
     id: makeId('track'),
@@ -1891,21 +1917,26 @@ async function saveProject(options = {}) {
   if (!state.projectPath || !state.project) return;
 
   const projectPath = state.projectPath;
-  const saveTask = enqueueCurrentProjectOperation(projectPath, () => (
-    window.imageRail.saveProject({
+  let savedSnapshot;
+  const saveTask = enqueueCurrentProjectOperation(projectPath, () => {
+    savedSnapshot = JSON.stringify(state.project);
+    return window.imageRail.saveProject({
       projectPath,
-      project: cloneProject()
-    })
-  ));
+      project: JSON.parse(savedSnapshot)
+    });
+  });
   state.savePromise = saveTask;
 
   try {
     const result = await saveTask;
     if (state.savePromise === saveTask && state.projectPath === projectPath) {
-      state.project = result.project;
+      state.saveError = null;
+      // Typing may continue while IPC is in flight, before the debounce fires.
+      if (JSON.stringify(state.project) === savedSnapshot) state.project = result.project;
       if (!options.silent) render();
     }
   } catch (error) {
+    if (state.savePromise === saveTask) state.saveError = error;
     showAppMessage(getErrorText(error, '保存失败'));
   }
 }
