@@ -14,6 +14,7 @@ const COMPARE_ZOOM_STEP = 0.25;
 const MAX_RAW_IMAGE_BYTES = 100 * 1024 * 1024;
 
 const state = {
+  showImageInfo: localStorage.getItem('imagerail.showImageInfo') === 'true',
   importBatch: null,
   projectPath: '',
   project: null,
@@ -42,10 +43,14 @@ const state = {
   savePromise: Promise.resolve(),
   pendingSaveTimer: null,
   activeCompareViewport: null,
-  comparePanelWidth: Number(localStorage.getItem(COMPARE_WIDTH_STORAGE_KEY)) || 390
+  comparePanelWidth: Number(localStorage.getItem(COMPARE_WIDTH_STORAGE_KEY)) || Math.round(window.innerWidth * 0.46)
 };
 
 const elements = {
+  organizeTracksButton: document.querySelector('#organizeTracksButton'),
+  toggleInfoButton: document.querySelector('#toggleInfoButton'),
+  compareFileNameText: document.querySelector('#compareFileNameText'),
+  projectSummaryText: document.querySelector('#projectSummaryText'),
   projectPathText: document.querySelector('#projectPathText'),
   undoButton: document.querySelector('#undoButton'),
   chooseProjectButton: document.querySelector('#chooseProjectButton'),
@@ -635,8 +640,16 @@ function render() {
 
   const hasProject = Boolean(state.projectPath && state.project);
   elements.projectPathText.textContent = hasProject
-    ? `${state.project.projectName || getFolderName(state.projectPath)} · ${state.projectPath}`
+    ? state.projectPath
     : '尚未选择项目文件夹';
+  elements.projectPathText.title = hasProject ? state.projectPath : '';
+  elements.projectSummaryText.textContent = hasProject
+    ? `${state.project.tracks.length} 条轨道 · ${state.project.tracks.reduce((sum, track) => sum + track.images.length, 0)} 张图片`
+    : '尚未打开项目';
+  elements.organizeTracksButton.disabled = !hasProject || Boolean(state.importBatch);
+  const allTracksCollapsed = hasProject && state.project.tracks.length > 0 && state.project.tracks.every(track => track.collapsed);
+  elements.organizeTracksButton.setAttribute('aria-pressed', String(Boolean(allTracksCollapsed)));
+  elements.organizeTracksButton.title = allTracksCollapsed ? '展开全部轨道' : '收起全部轨道';
   elements.newTrackButton.disabled = !hasProject;
   updateUndoButton();
   updateCompareModeButtons();
@@ -826,6 +839,27 @@ function toggleTrackCollapsed(trackId) {
   requestProjectSave({ silent: true });
   commitUndo(undo);
   render();
+}
+
+function toggleAllTracks() {
+  if (state.importBatch || !state.project || !state.project.tracks.length) return;
+  const collapse = !state.project.tracks.every(track => track.collapsed);
+  const undo = captureUndo(collapse ? '收起全部轨道' : '展开全部轨道');
+  state.project.tracks.forEach(track => { track.collapsed = collapse; });
+  requestProjectSave({ silent: true });
+  commitUndo(undo);
+  render();
+}
+
+function updateInfoPanelVisibility() {
+  elements.compareDetails.hidden = !state.showImageInfo;
+  elements.toggleInfoButton.setAttribute('aria-pressed', String(state.showImageInfo));
+}
+
+function toggleImageInfo() {
+  state.showImageInfo = !state.showImageInfo;
+  localStorage.setItem('imagerail.showImageInfo', String(state.showImageInfo));
+  updateInfoPanelVisibility();
 }
 
 function createTrackElement(track, trackIndex) {
@@ -1558,7 +1592,8 @@ function updateImportControls() {
   const busy = Boolean(state.importBatch);
   elements.chooseProjectButton.disabled = busy;
   elements.newTrackButton.disabled = busy || !state.project;
-  elements.compareNoteInput.disabled = busy;
+  elements.organizeTracksButton.disabled = busy || !state.project;
+  elements.compareNoteInput.disabled = busy || !elements.compareNoteInput.dataset.imageId;
   elements.undoButton.disabled = busy || !state.undoEntry || state.undoInProgress;
   document.querySelector('#importProgress').hidden = !busy;
   document.querySelectorAll('.card-status-select, .delete-button, .track-label > .small-button, .track-collapse-button, .compare-status-button').forEach(control => { control.disabled = busy; });
@@ -2077,6 +2112,7 @@ function closeCompareStatusMenus(exceptMenu = null) {
 }
 
 function renderComparePanel() {
+  updateInfoPanelVisibility();
   const selected = findSelectedImage();
   let pinned = state.compareMode === 'compare' ? findImageById(state.pinnedCompareImageId) : null;
   if (state.compareMode === 'compare' && !pinned && selected) {
@@ -2105,7 +2141,13 @@ function renderComparePanel() {
   elements.compareContent.replaceChildren();
 
   if (!detailsItem) {
-    elements.compareDetails.hidden = true;
+    elements.compareFileNameText.textContent = '未选择图片';
+    elements.compareDimensionsText.textContent = '-';
+    elements.compareSizeText.textContent = '-';
+    elements.compareNoteInput.value = '';
+    elements.compareNoteInput.dataset.imageId = '';
+    elements.compareNoteInput.disabled = true;
+    elements.compareRevealButton.disabled = true;
     elements.compareContent.className = 'compare-empty';
     elements.compareContent.textContent = state.projectPath
       ? '点击任意图片卡片后，这里会显示大图。'
@@ -2113,14 +2155,17 @@ function renderComparePanel() {
     return;
   }
 
-  elements.compareDetails.hidden = isCompareMode;
-  if (!isCompareMode) {
+  {
+    elements.compareFileNameText.textContent = detailsItem.image.fileName;
+    elements.compareFileNameText.title = detailsItem.image.fileName;
+    elements.compareNoteInput.disabled = Boolean(state.importBatch);
+    elements.compareRevealButton.disabled = false;
     elements.compareDimensionsText.textContent = '读取中';
     elements.compareSizeText.textContent = '读取中';
-    elements.compareNoteInput.value = selected.image.note || '';
-    elements.compareNoteInput.dataset.trackId = selected.track.id;
-    elements.compareNoteInput.dataset.imageId = selected.image.id;
-    elements.compareRevealButton.dataset.imageId = selected.image.id;
+    elements.compareNoteInput.value = detailsItem.image.note || '';
+    elements.compareNoteInput.dataset.trackId = detailsItem.track.id;
+    elements.compareNoteInput.dataset.imageId = detailsItem.image.id;
+    elements.compareRevealButton.dataset.imageId = detailsItem.image.id;
   }
 
   elements.compareContent.className = isCompareMode ? 'compare-stack' : 'compare-single';
@@ -2132,6 +2177,7 @@ function renderComparePanel() {
         ? createComparePane(secondImage, false, previousPanes.get(secondImage.image.id))
         : createComparePlaceholder()
     );
+    updateCompareDetailsMetadata(detailsItem, elements.compareContent.querySelector(`[data-image-id="${CSS.escape(detailsItem.image.id)}"]`), signature);
     updateCompareZoomButtons();
     return;
   }
@@ -2252,8 +2298,7 @@ function createComparePane(item, isPinned = false, previousPane = null) {
 
 function updateCompareDetailsMetadata(item, pane, signature) {
   const isCurrent = () => (
-    state.compareMode === 'single'
-    && elements.compareContent.dataset.signature === signature
+    elements.compareContent.dataset.signature === signature
     && elements.compareNoteInput.dataset.imageId === item.image.id
   );
   const image = pane.querySelector('img');
@@ -2505,6 +2550,8 @@ elements.projectModal.addEventListener('click', (event) => {
   if (event.target === elements.projectModal) closeProjectModal();
 });
 elements.newTrackButton.addEventListener('click', createTrack);
+elements.organizeTracksButton.addEventListener('click', toggleAllTracks);
+elements.toggleInfoButton.addEventListener('click', toggleImageInfo);
 elements.scrollBoardTopButton.addEventListener('click', () => {
   elements.railBoard.scrollTo({ top: 0, behavior: 'smooth' });
 });
