@@ -19,6 +19,9 @@
     chooseProjectFolder: (payload = {}) => invoke('choose_project_folder', {
       projectName: payload.projectName || ''
     }),
+    getImageThumbnail: (payload) => invoke('get_image_thumbnail', payload),
+    releaseImageThumbnails: (leaseIds) => invoke('release_image_thumbnails', { leaseIds }),
+    reloadProject: (projectDataFile) => invoke('reload_project_command', { projectDataFile }),
     listProjects: () => invoke('list_projects'),
     openExistingProject: (payload) => invoke('open_existing_project', {
       projectPath: payload.projectPath,
@@ -66,7 +69,7 @@
     }),
     addImageToTrack: (payload) => invoke('add_image_to_track_command', {
       projectPath: payload.projectPath,
-      project: payload.project,
+      projectDataFile: payload.project.projectDataFile,
       trackId: payload.trackId,
       sourcePath: payload.sourcePath
     }),
@@ -85,7 +88,7 @@
     ),
     addImageUrlToTrack: (payload) => invoke('add_image_url_to_track_command', {
       projectPath: payload.projectPath,
-      project: payload.project,
+      projectDataFile: payload.project.projectDataFile,
       trackId: payload.trackId,
       url: payload.url
     }),

@@ -59,6 +59,37 @@ https://github.com/Star-Fish-C/Image-rail/releases
 - CSS
 - JavaScript
 
+### 开发与测试
+
+前端回归测试仅需要 Node.js 18 或更新版本：
+
+```sh
+npm test
+```
+
+启动与打包：
+
+```sh
+npm ci
+npm start
+npm run dist
+```
+
+桌面构建需要 Rust 1.91 或更新版本、Tauri 系统依赖；Windows 还需 Visual Studio C++ Build Tools、WebView2，以及 PATH 中的 CMake、NASM、Perl（用于静态编译 AVIF 解码器）。已验证 CMake 3.31.6、NASM 2.16.03 和 Git for Windows 附带的 Perl。
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml
+```
+
+### 图片加载与导入
+
+- 卡片按需显示最长边 512 像素的缓存缩略图；查看和对比仍使用原图。GIF 卡片显示首帧。
+- 缩略图缓存在系统应用缓存目录的 `thumbnails` 中，可删除并自动重建，不写入图片项目目录。缓存软上限 512 MB，使用期间最多每 30 秒后台清理一次，保留正在使用的文件。
+- 缩略图输入上限为 100 MB、单边 8192 像素；普通解码器设置 512 MB 分配预算，AVIF 在 libaom 内限制帧尺寸。超过限制或格式损坏时显示重试按钮，原文件与项目记录保留。
+- 批量导入显示进度并暂停编辑；取消会等待当前图片结束，保留已导入图片。网页下载总超时为 120 秒。
+- 保存失败会保留编辑，关闭、项目切换和导入会等待保存成功。
+
+优化实现、性能数据、测试范围与 PR #1 的整合说明见 [性能验证记录](docs/performance.md)。
 
 
 ## 贡献者
