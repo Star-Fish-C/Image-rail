@@ -5,7 +5,8 @@
   "scripts": {
     "start": "tauri dev",
     "tauri": "tauri",
-    "dist": "tauri build"
+    "dist": "tauri build",
+    "test": "node --test tests/frontend.test.cjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0"

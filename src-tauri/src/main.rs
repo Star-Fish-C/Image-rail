@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod thumbnails;
+
 use serde_json::{json, Value};
 use std::fs;
 use std::io::{Read, Write};
@@ -20,6 +22,7 @@ type AppResult<T> = Result<T, String>;
 
 fn main() {
     let app = tauri::Builder::default()
+        .manage(thumbnails::ThumbnailCache::default())
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
@@ -27,6 +30,9 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            thumbnails::get_image_thumbnail,
+            thumbnails::release_image_thumbnails,
+            reload_project_command,
             choose_project_folder,
             list_projects,
             open_existing_project,
@@ -754,7 +760,7 @@ where
     match save_project(project_path, working_project) {
         Ok(saved_project) => Ok(json!({
             "projectPath": project_path,
-            "project": saved_project,
+            "updatedAt": saved_project["updatedAt"],
             "image": image_record
         })),
         Err(error) => {
@@ -1537,34 +1543,41 @@ fn close_window_command(window: tauri::Window) -> AppResult<()> {
 }
 
 #[tauri::command]
-fn add_image_to_track_command(
+async fn add_image_to_track_command(
     project_path: String,
-    project: Value,
+    project_data_file: String,
     track_id: String,
     source_path: String,
 ) -> AppResult<Value> {
-    let extension = image_extension_from_name(&source_path);
-    add_image_with_writer(
-        &project_path,
-        project,
-        &track_id,
-        &extension,
-        |destination| {
-            fs::copy(&source_path, destination)
-                .map(|_| ())
-                .map_err(|error| error.to_string())
-        },
-    )
+    tauri::async_runtime::spawn_blocking(move || {
+        let project = read_project_from_data_file(&project_data_file)?;
+        let extension = image_extension_from_name(&source_path);
+        if fs::metadata(&source_path).map_err(|e| e.to_string())?.len() > MAX_REMOTE_IMAGE_BYTES {
+            return Err("图片超过 100 MB".into());
+        }
+        add_image_with_writer(
+            &project_path,
+            project,
+            &track_id,
+            &extension,
+            |destination| {
+                fs::copy(&source_path, destination)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            },
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn add_image_raw_file_data_to_track_command(request: Request<'_>) -> AppResult<Value> {
+async fn add_image_raw_file_data_to_track_command(request: Request<'_>) -> AppResult<Value> {
     let project_path = percent_decode(&header_value(&request, "x-project-path")?)?;
     let project_data_file = percent_decode(&header_value(&request, "x-project-data-file")?)?;
     let track_id = percent_decode(&header_value(&request, "x-track-id")?)?;
     let file_name = percent_decode(&header_value(&request, "x-file-name")?)?;
     let mime_type = header_value(&request, "x-mime-type").unwrap_or_default();
-    let project = read_project_from_data_file(&project_data_file)?;
     let extension =
         image_extension_from_name(&file_name).if_empty(image_extension_from_mime(&mime_type));
     let file_data = match request.body() {
@@ -1573,51 +1586,66 @@ fn add_image_raw_file_data_to_track_command(request: Request<'_>) -> AppResult<V
         InvokeBody::Json(_) => return Err("Image data must be sent as raw bytes".to_string()),
     };
 
-    add_image_with_writer(
-        &project_path,
-        project,
-        &track_id,
-        &extension,
-        |destination| fs::write(destination, &file_data).map_err(|error| error.to_string()),
-    )
+    tauri::async_runtime::spawn_blocking(move || {
+        let project = read_project_from_data_file(&project_data_file)?;
+        add_image_with_writer(
+            &project_path,
+            project,
+            &track_id,
+            &extension,
+            |destination| fs::write(destination, &file_data).map_err(|error| error.to_string()),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn add_image_url_to_track_command(
+async fn add_image_url_to_track_command(
     project_path: String,
-    project: Value,
+    project_data_file: String,
     track_id: String,
     url: String,
 ) -> AppResult<Value> {
-    let response = ureq::get(&url).call().map_err(|error| error.to_string())?;
-    let content_type = response.header("content-type").unwrap_or("");
-    let extension = image_extension_from_mime(content_type.split(';').next().unwrap_or(""))
-        .if_empty(image_extension_from_url(&url));
-    if response
-        .header("content-length")
-        .and_then(|value| value.parse::<u64>().ok())
-        .map(|size| size > MAX_REMOTE_IMAGE_BYTES)
-        .unwrap_or(false)
-    {
-        return Err("网页图片超过 100 MB，已停止导入".to_string());
-    }
-    let mut bytes = Vec::new();
-    response
-        .into_reader()
-        .take(MAX_REMOTE_IMAGE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| error.to_string())?;
-    if bytes.len() as u64 > MAX_REMOTE_IMAGE_BYTES {
-        return Err("网页图片超过 100 MB，已停止导入".to_string());
-    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let project = read_project_from_data_file(&project_data_file)?;
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(std::time::Duration::from_secs(10))
+            .timeout_read(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_secs(120))
+            .build();
+        let response = agent.get(&url).call().map_err(|error| error.to_string())?;
+        let content_type = response.header("content-type").unwrap_or("");
+        let extension = image_extension_from_mime(content_type.split(';').next().unwrap_or(""))
+            .if_empty(image_extension_from_url(&url));
+        if response
+            .header("content-length")
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(|size| size > MAX_REMOTE_IMAGE_BYTES)
+            .unwrap_or(false)
+        {
+            return Err("网页图片超过 100 MB，已停止导入".to_string());
+        }
+        let mut bytes = Vec::new();
+        response
+            .into_reader()
+            .take(MAX_REMOTE_IMAGE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| error.to_string())?;
+        if bytes.len() as u64 > MAX_REMOTE_IMAGE_BYTES {
+            return Err("网页图片超过 100 MB，已停止导入".to_string());
+        }
 
-    add_image_with_writer(
-        &project_path,
-        project,
-        &track_id,
-        &extension,
-        |destination| fs::write(destination, &bytes).map_err(|error| error.to_string()),
-    )
+        add_image_with_writer(
+            &project_path,
+            project,
+            &track_id,
+            &extension,
+            |destination| fs::write(destination, &bytes).map_err(|error| error.to_string()),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1882,4 +1910,11 @@ mod tests {
         assert!(!old_track.exists());
         fs::remove_dir_all(directory).unwrap();
     }
+}
+
+#[tauri::command]
+async fn reload_project_command(project_data_file: String) -> AppResult<Value> {
+    tauri::async_runtime::spawn_blocking(move || read_project_from_data_file(&project_data_file))
+        .await
+        .map_err(|e| e.to_string())?
 }

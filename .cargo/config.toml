@@ -1,0 +1,4 @@
+[env]
+# libaom enforces these limits before allocating AV1 frames.
+LIB_AOM_DECODE_WIDTH_LIMIT = "8192"
+LIB_AOM_DECODE_HEIGHT_LIMIT = "8192"

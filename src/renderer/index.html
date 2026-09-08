@@ -32,6 +32,7 @@
         </div>
       </header>
 
+      <div id="importProgress" class="import-progress" role="status" hidden><span id="importProgressText"></span><button id="cancelImportButton" type="button">取消导入</button></div>
       <main class="workspace">
         <section class="rail-board">
           <div class="empty-state" id="emptyState">
@@ -129,6 +130,9 @@
     </div>
 
     <script src="./tauri-api.js"></script>
+    <script src="./thumbnails.js"></script>
+    <script src="./save-controller.js"></script>
+    <script src="./import-batch.js"></script>
     <script src="./renderer.js"></script>
   </body>
 </html>
