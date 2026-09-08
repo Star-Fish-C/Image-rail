@@ -1809,8 +1809,7 @@ body.resizing-compare .compare-resizer {
 }
 
 /* Thumbnail placeholders preserve card geometry while background requests run. */
-.image-card .thumb-button { background: #20242a; }
-.image-card[data-thumbnail="loading"] .thumb-button::after { content: '加载缩略图…'; color: #aeb4bf; font-size: 12px; }
+.image-card[data-thumbnail="loading"] .thumb-button::after { content: '加载缩略图…'; color: var(--muted); font-size: 12px; }
 .image-card:not([data-thumbnail="ready"]) .thumb-button img { display: none; }
 .thumbnail-retry { display: none; width: 100%; font-size: 12px; }
 .image-card[data-thumbnail="error"] .thumbnail-retry { display: block; }
