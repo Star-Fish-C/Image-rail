@@ -146,6 +146,40 @@ module.exports = async function check(page, root) {
     },url);
     assert.equal(remote.added,1);assert.match(remote.message,/100 MB/);assert.match(remote.message,/missing.png/);
   } finally { await new Promise(resolve=>server.close(resolve)); }
+  const workbench = await page.evaluate(async () => {
+    if (state.showImageInfo) toggleImageInfo();
+    elements.toggleInfoButton.click();
+    const first = state.project.tracks[0].images[0];
+    const next = state.project.tracks[0].images[1];
+    selectImage(first.id); refreshSelectedImageView();
+    const original = document.querySelector('.compare-image-button');
+    elements.toggleInfoButton.click(); elements.toggleInfoButton.click();
+    const retained = document.querySelector('.compare-image-button') === original;
+    state.compareMode = 'compare'; state.pinnedCompareImageId = first.id;
+    selectImage(next.id); refreshSelectedImageView();
+    const survivesComparison = !elements.compareDetails.hidden && elements.compareNoteInput.dataset.imageId === next.id;
+    toggleAllTracks();
+    await waitForProjectOperations();
+    const collapsed = state.project.tracks.every(track => track.collapsed);
+    await undoLastAction();
+    const restored = state.project.tracks.every(track => !track.collapsed);
+    const snapshot = cloneProject();
+    setProject(state.projectPath, snapshot);
+    const survivesProject = !elements.compareDetails.hidden && state.showImageInfo;
+    selectImage(first.id); refreshSelectedImageView();
+    return {retained,survivesComparison,collapsed,restored,survivesProject,persisted:localStorage.getItem('imagerail.showImageInfo'),path:elements.projectPathText.textContent===state.projectPath};
+  });
+  assert.deepEqual(workbench,{retained:true,survivesComparison:true,collapsed:true,restored:true,survivesProject:true,persisted:'true',path:true});
+  await page.setViewportSize({width:980,height:640});
+  const fits = await page.evaluate(() => {
+    const toolbar = document.querySelector('.workbench-toolbar').getBoundingClientRect();
+    const details = elements.compareDetails.getBoundingClientRect();
+    const note = elements.compareNoteInput.getBoundingClientRect();
+    return toolbar.right <= innerWidth && details.bottom <= innerHeight && note.width > 100
+      && elements.compareContent.getBoundingClientRect().height > 150;
+  });
+  assert.equal(fits,true,'toolbar, preview and open information panel fit the minimum window');
+  await page.setViewportSize({width:1280,height:820});
   await page.screenshot({path:path.join(root,'.perf/integration.png')});
   return {passed:['50 sequential imports and progress','editing lock','original viewport retained on status change','in-flight note save','cancel after current image','partial failure and undo','failed close and retry','save failure blocks import (PR #1 omission)','raw IPC and seven image formats','thumbnail failure preserves imported file','HTTP image import, oversize rejection and 404 aggregation'],formats};
 };

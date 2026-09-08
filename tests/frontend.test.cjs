@@ -6,6 +6,24 @@ const { SaveController } = require('../src/renderer/save-controller.js');
 const { runSequentialImport } = require('../src/renderer/import-batch.js');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
+test('organize collapses mixed tracks, expands fully collapsed tracks and respects import lock', () => {
+  const labels = [];
+  const context = { state: {project:{tracks:[{collapsed:false},{collapsed:true}]}}, captureUndo:label=>{labels.push(label);}, requestProjectSave:()=>{}, commitUndo:()=>{}, render:()=>{} };
+  vm.createContext(context);
+  vm.runInContext(sourceFunction('toggleAllTracks'),context);
+  context.toggleAllTracks();
+  assert.ok(context.state.project.tracks.every(track=>track.collapsed));
+  context.toggleAllTracks();
+  assert.ok(context.state.project.tracks.every(track=>!track.collapsed));
+  context.state.project.tracks[0].collapsed = true;
+  context.toggleAllTracks();
+  assert.ok(context.state.project.tracks.every(track=>track.collapsed));
+  context.state.importBatch = {};
+  context.toggleAllTracks();
+  assert.ok(context.state.project.tracks.every(track=>track.collapsed));
+  assert.deepEqual(labels,['收起全部轨道','展开全部轨道','收起全部轨道']);
+});
+
 test('editing during an in-flight save is drained without overwriting current state', async () => {
   let note = 'first';
   const writes = [], releases = [];
