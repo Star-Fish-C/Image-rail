@@ -10,7 +10,7 @@
   --line: rgba(148, 163, 184, 0.28);
   --accent: #4f7cff;
   --accent-strong: #365ee8;
-  --accent-soft: rgba(79, 124, 255, 0.12);
+  --accent-soft: var(--accent-soft);
   --danger: #b42318;
   --radius: 16px;
   --radius-small: 12px;
@@ -56,7 +56,7 @@ textarea {
 .project-list,
 textarea {
   scrollbar-width: thin;
-  scrollbar-color: rgba(79, 124, 255, 0.38) rgba(255, 255, 255, 0.28);
+  scrollbar-color: var(--scroll-thumb) transparent;
 }
 
 .rail-board::-webkit-scrollbar,
@@ -82,14 +82,14 @@ textarea::-webkit-scrollbar-track {
 textarea::-webkit-scrollbar-thumb {
   border: 2px solid rgba(255, 255, 255, 0.55);
   border-radius: 999px;
-  background: linear-gradient(135deg, rgba(107, 147, 255, 0.72), rgba(121, 196, 225, 0.58));
+  background: var(--scroll-thumb);
 }
 
 .rail-board::-webkit-scrollbar-thumb:hover,
 .track-lane::-webkit-scrollbar-thumb:hover,
 .project-list::-webkit-scrollbar-thumb:hover,
 textarea::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(135deg, rgba(79, 124, 255, 0.86), rgba(84, 183, 216, 0.74));
+  background: var(--accent);
 }
 
 .rail-board::-webkit-scrollbar-corner,
@@ -117,7 +117,7 @@ button:hover:not(:disabled) {
   border-color: var(--accent);
   color: var(--accent);
   transform: translateY(-1px);
-  box-shadow: 0 10px 24px rgba(79, 124, 255, 0.14);
+  box-shadow: 0 10px 24px var(--accent-soft);
 }
 
 button:active:not(:disabled) {
@@ -280,7 +280,7 @@ button:disabled {
   border-color: var(--accent);
   background: var(--accent-soft);
   color: var(--accent-strong);
-  box-shadow: 0 8px 20px rgba(79, 124, 255, 0.14);
+  box-shadow: 0 8px 20px var(--accent-soft);
 }
 
 .workspace {
@@ -368,7 +368,7 @@ body.resizing-compare {
   height: 3px;
   border-radius: 999px;
   background: var(--accent);
-  box-shadow: 0 0 0 4px rgba(79, 124, 255, 0.12);
+  box-shadow: 0 0 0 4px var(--accent-soft);
   z-index: 5;
   pointer-events: none;
 }
@@ -416,13 +416,13 @@ body.resizing-compare {
   min-width: 30px;
   min-height: 30px;
   padding: 0;
-  border: 1px solid rgba(79, 124, 255, 0.3);
+  border: 1px solid var(--accent-soft);
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.82);
   color: var(--accent);
   font-size: 15px;
   line-height: 1;
-  box-shadow: 0 4px 12px rgba(79, 124, 255, 0.12);
+  box-shadow: 0 4px 12px var(--accent-soft);
 }
 
 .track-collapse-button:hover:not(:disabled) {
@@ -430,12 +430,12 @@ body.resizing-compare {
   background: var(--accent-soft);
   color: var(--accent-strong);
   transform: scale(1.08);
-  box-shadow: 0 7px 16px rgba(79, 124, 255, 0.2);
+  box-shadow: 0 7px 16px var(--accent-soft);
 }
 
 .track-collapse-button:active:not(:disabled) {
   transform: scale(0.94);
-  box-shadow: inset 0 2px 4px rgba(54, 94, 232, 0.16);
+  box-shadow: inset 0 2px 4px var(--accent-soft);
 }
 
 .track-label span {
@@ -505,7 +505,7 @@ body.resizing-compare {
 }
 
 .track-lane.drag-over {
-  background: rgba(79, 124, 255, 0.08);
+  background: var(--accent-soft);
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
@@ -550,7 +550,7 @@ body.resizing-compare {
 
 .image-card.selected {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(79, 124, 255, 0.16), 0 18px 34px rgba(72, 84, 112, 0.13);
+  box-shadow: 0 0 0 3px var(--accent-soft), 0 18px 34px rgba(72, 84, 112, 0.13);
 }
 
 .image-card.drag-over-image::before {
@@ -561,7 +561,7 @@ body.resizing-compare {
   width: 3px;
   border-radius: 999px;
   background: var(--accent);
-  box-shadow: 0 0 0 4px rgba(79, 124, 255, 0.12);
+  box-shadow: 0 0 0 4px var(--accent-soft);
   z-index: 3;
 }
 
@@ -838,7 +838,7 @@ body.resizing-compare .compare-resizer {
 }
 
 .compare-header button:hover:not(:disabled) {
-  background: rgba(79, 124, 255, 0.12);
+  background: var(--accent-soft);
   border-color: transparent;
   color: var(--accent-strong);
   transform: none;
@@ -947,8 +947,8 @@ body.resizing-compare .compare-resizer {
 }
 
 .compare-pane-pinned {
-  border-color: rgba(37, 99, 235, 0.45);
-  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.08), 0 8px 22px rgba(72, 84, 112, 0.09);
+  border-color: var(--accent-soft);
+  box-shadow: 0 0 0 1px var(--accent-soft), 0 8px 22px rgba(72, 84, 112, 0.09);
 }
 
 .compare-pane-placeholder {
@@ -963,7 +963,7 @@ body.resizing-compare .compare-resizer {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px dashed rgba(79, 124, 255, 0.28);
+  border: 1px dashed var(--accent-soft);
   border-radius: 11px;
   color: var(--muted);
   font-size: 13px;
@@ -1025,7 +1025,7 @@ body.resizing-compare .compare-resizer {
   justify-content: space-between;
   gap: 8px;
   padding: 0 9px 0 10px;
-  border: 1px solid rgba(79, 124, 255, 0.2);
+  border: 1px solid var(--accent-soft);
   border-radius: 9px;
   background: var(--accent-soft);
   color: var(--accent);
@@ -1043,7 +1043,7 @@ body.resizing-compare .compare-resizer {
   color: var(--accent);
   outline: 0;
   transform: none;
-  box-shadow: 0 0 0 2px rgba(79, 124, 255, 0.1);
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 .compare-status-button:active:not(:disabled),
@@ -1136,14 +1136,14 @@ body.resizing-compare .compare-resizer {
 
 .compare-status-option:hover:not(:disabled) {
   border-color: transparent;
-  background: rgba(79, 124, 255, 0.08);
+  background: var(--accent-soft);
   color: var(--text);
   transform: none;
   box-shadow: none;
 }
 
 .compare-status-option.active {
-  background: rgba(79, 124, 255, 0.1);
+  background: var(--accent-soft);
   color: var(--accent-strong);
   font-weight: 700;
 }
@@ -1177,7 +1177,7 @@ body.resizing-compare .compare-resizer {
   align-items: center;
   gap: 5px;
   padding: 3px 7px;
-  border: 1px solid rgba(79, 124, 255, 0.2);
+  border: 1px solid var(--accent-soft);
   border-radius: 999px;
   background: var(--accent-soft);
   color: var(--accent);
@@ -1334,7 +1334,7 @@ body.resizing-compare .compare-resizer {
 
 .compare-detail-note input:hover,
 .compare-detail-note input:focus {
-  border-color: rgba(79, 124, 255, 0.28);
+  border-color: var(--accent-soft);
   background: #fff;
 }
 
@@ -1431,7 +1431,7 @@ body.resizing-compare .compare-resizer {
 }
 
 .rename-dialog input:focus {
-  outline: 2px solid rgba(37, 99, 235, 0.22);
+  outline: 2px solid var(--accent-soft);
   border-color: var(--accent);
 }
 
@@ -1536,7 +1536,7 @@ body.resizing-compare .compare-resizer {
 
 .project-list-item:hover {
   transform: translateY(-1px);
-  border-color: rgba(79, 124, 255, 0.3);
+  border-color: var(--accent-soft);
   box-shadow: var(--shadow-soft);
 }
 
@@ -1573,7 +1573,7 @@ body.resizing-compare .compare-resizer {
 }
 
 .project-open-button:hover:not(:disabled) {
-  background: rgba(79, 124, 255, 0.08);
+  background: var(--accent-soft);
 }
 
 .project-open-button strong,
@@ -1725,7 +1725,7 @@ body.resizing-compare .compare-resizer {
 }
 
 .context-menu button:hover:not(:disabled) {
-  background: rgba(79, 124, 255, 0.10);
+  background: var(--accent-soft);
   border-radius: 6px;
   color: var(--accent);
   transform: none;

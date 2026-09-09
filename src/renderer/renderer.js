@@ -101,6 +101,63 @@ const elements = {
   closeWindowButton: document.querySelector('#closeWindowButton')
 };
 
+const trackMenu = document.createElement('div');
+trackMenu.className = 'track-menu';
+trackMenu.setAttribute('role', 'menu');
+trackMenu.hidden = true;
+document.body.append(trackMenu);
+let trackMenuAnchor = null;
+function closeTrackMenu(restoreFocus = false) {
+  if (trackMenu.hidden) return;
+  const anchor = trackMenuAnchor;
+  trackMenu.hidden = true;
+  trackMenuAnchor = null;
+  anchor?.setAttribute('aria-expanded', 'false');
+  cancelInlineDeleteConfirmations();
+  if (restoreFocus && anchor?.isConnected) anchor.focus();
+}
+function openTrackMenu(anchor, buttons) {
+  if (state.importBatch) return;
+  const same = trackMenuAnchor === anchor && !trackMenu.hidden;
+  closeTrackMenu();
+  if (same) return;
+  closeContextMenu();
+  closeCompareStatusMenus();
+  buttons.forEach(button => { button.setAttribute('role', 'menuitem'); button.disabled = false; });
+  trackMenu.replaceChildren(...buttons);
+  trackMenuAnchor = anchor;
+  anchor.setAttribute('aria-expanded', 'true');
+  trackMenu.hidden = false;
+  const rect = anchor.getBoundingClientRect();
+  const bounds = trackMenu.getBoundingClientRect();
+  trackMenu.style.left = `${Math.max(8, Math.min(rect.right - bounds.width, innerWidth - bounds.width - 8))}px`;
+  trackMenu.style.top = `${Math.max(8, rect.bottom + bounds.height + 8 <= innerHeight ? rect.bottom + 4 : rect.top - bounds.height - 4)}px`;
+  buttons[0].focus({preventScroll:true});
+}
+trackMenu.addEventListener('click', event => {
+  const button = event.target.closest('button');
+  if (!button) return;
+  const shouldClose = !button.classList.contains('danger-button') || button.classList.contains('confirm-delete');
+  // Let the target's existing action consume the confirmation before clearing it.
+  if (shouldClose) setTimeout(() => closeTrackMenu(), 0);
+}, true);
+trackMenu.addEventListener('keydown', event => {
+  const buttons = [...trackMenu.querySelectorAll('button:not(:disabled)')];
+  if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeTrackMenu(true); }
+  if (event.key === 'Tab') closeTrackMenu();
+  if (['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) {
+    event.preventDefault();
+    const index = buttons.indexOf(document.activeElement);
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
+    buttons[next]?.focus();
+  }
+});
+document.addEventListener('pointerdown', event => {
+  if (!trackMenu.contains(event.target) && !event.target.closest('.track-more-button')) closeTrackMenu();
+});
+document.addEventListener('scroll', () => closeTrackMenu(), true);
+window.addEventListener('resize', () => closeTrackMenu());
+window.addEventListener('blur', () => closeTrackMenu());
 const thumbnailLoader = new ThumbnailLoader(elements.railBoard, window.imageRail, updateTrackNavigationButtons);
 
 const projectSaves = new SaveController(() => {
@@ -254,6 +311,7 @@ function formatFileSize(sizeBytes) {
 }
 
 function setProject(projectPath, project) {
+  closeTrackMenu();
   projectSaves.reset();
   elements.tracks.replaceChildren();
   thumbnailLoader.clear();
@@ -396,6 +454,7 @@ async function undoLastAction() {
 }
 
 function setProjectFromResult(result) {
+  closeTrackMenu();
   state.projectPath = result.projectPath || state.projectPath;
   state.project = result.project;
   render();
@@ -761,7 +820,7 @@ function reconcileTracks() {
       const meta = label?.querySelector('span');
       const deleteButton = label?.querySelector('.danger-button');
       const collapseButton = label?.querySelector('.track-collapse-button');
-      if (name) name.textContent = track.name;
+      if (name) { name.textContent = track.name; name.title = track.name; }
       if (meta) {
         meta.textContent = `${track.images.length} 张图片 · 文件夹 ${track.folderName || `track_${track.letter || getTrackLetter(trackIndex)}`} · 前缀 ${track.prefix || track.letter || getTrackLetter(trackIndex)}`;
       }
@@ -824,7 +883,7 @@ function updateTrackNavigationButtons(lane) {
 }
 
 function updateTrackCollapseButton(button, collapsed) {
-  button.textContent = collapsed ? '▾' : '▴';
+  setButtonIcon(button, collapsed ? 'right' : 'down');
   button.title = collapsed ? '展开轨道' : '折叠轨道';
   button.setAttribute('aria-label', button.title);
 }
@@ -948,7 +1007,19 @@ function createTrackElement(track, trackIndex) {
   });
 
   trackNavigation.append(scrollLeftButton, scrollRightButton);
-  label.append(trackTitleRow, trackMeta, renameTrackButton, renamePrefixButton, deleteTrackButton, trackNavigation);
+  const moreButton = document.createElement('button');
+  moreButton.className = 'track-more-button';
+  moreButton.type = 'button';
+  moreButton.title = '更多轨道操作';
+  moreButton.setAttribute('aria-label', '更多轨道操作');
+  moreButton.setAttribute('aria-haspopup', 'menu');
+  moreButton.setAttribute('aria-expanded', 'false');
+  setButtonIcon(moreButton, 'more');
+  moreButton.addEventListener('click', () => openTrackMenu(moreButton, [renameTrackButton, renamePrefixButton, deleteTrackButton]));
+  setButtonIcon(scrollLeftButton, 'left');
+  setButtonIcon(scrollRightButton, 'right');
+  trackName.title = track.name;
+  label.append(trackTitleRow, trackMeta, trackNavigation, moreButton);
 
   trackElement.addEventListener('dragover', (event) => {
     if (!dataTransferHasType(event.dataTransfer, 'application/x-imagerail-track')) return;
@@ -1356,6 +1427,7 @@ function showImageContextMenu(x, y, trackId, image) {
   elements.revealImageButton.disabled = !image;
   elements.deleteContextImageButton.disabled = !image;
   elements.pasteImageButton.disabled = true;
+  closeTrackMenu();
   elements.contextMenu.hidden = false;
   updatePasteButtonState();
 
@@ -1590,13 +1662,14 @@ function markInlineDeleteConfirmation(button, type, id) {
 
 function updateImportControls() {
   const busy = Boolean(state.importBatch);
+  if (busy) closeTrackMenu();
   elements.chooseProjectButton.disabled = busy;
   elements.newTrackButton.disabled = busy || !state.project;
   elements.organizeTracksButton.disabled = busy || !state.project;
   elements.compareNoteInput.disabled = busy || !elements.compareNoteInput.dataset.imageId;
   elements.undoButton.disabled = busy || !state.undoEntry || state.undoInProgress;
   document.querySelector('#importProgress').hidden = !busy;
-  document.querySelectorAll('.card-status-select, .delete-button, .track-label > .small-button, .track-collapse-button, .compare-status-button').forEach(control => { control.disabled = busy; });
+  document.querySelectorAll('.card-status-select, .delete-button, .track-more-button, .track-collapse-button, .compare-status-button').forEach(control => { control.disabled = busy; });
 }
 
 function appendImportedImage(trackId, result) {
@@ -2225,7 +2298,7 @@ function createComparePane(item, isPinned = false, previousPane = null) {
 
   const statusCaret = document.createElement('span');
   statusCaret.className = 'compare-status-caret';
-  statusCaret.textContent = '⌄';
+  statusCaret.append(uiIcon('down'));
   statusButton.append(statusButtonLabel, statusCaret);
 
   const statusMenu = document.createElement('div');
@@ -2539,6 +2612,14 @@ document.addEventListener('click', event => {
 }, true);
 
 applyComparePanelWidth();
+for (const [id, icon] of Object.entries({scrollBoardTopButton:'up',scrollBoardBottomButton:'down',undoButton:'undo',minimizeWindowButton:'minus',maximizeWindowButton:'maximize',closeWindowButton:'close',zoomOutButton:'minus',zoomInButton:'plus'})) {
+  setButtonIcon(elements[id], icon);
+}
+for (const [id, icon, label] of [['organizeTracksButton','organize','整理'],['toggleInfoButton','info','显示信息']]) {
+  const button = elements[id];
+  const text = document.createElement('span'); text.textContent = label;
+  button.replaceChildren(uiIcon(icon), text);
+}
 updateCompareZoomButtons();
 setupCompareResizer();
 setupWindowFrame();
