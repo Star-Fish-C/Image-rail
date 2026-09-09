@@ -179,6 +179,7 @@ module.exports = async function check(page, root) {
       && elements.compareContent.getBoundingClientRect().height > 150;
   });
   assert.equal(fits,true,'toolbar, preview and open information panel fit the minimum window');
+  await require('./workbench-checks.cjs')(page);
   await page.setViewportSize({width:1280,height:820});
   await page.screenshot({path:path.join(root,'.perf/integration.png')});
   return {passed:['50 sequential imports and progress','editing lock','original viewport retained on status change','in-flight note save','cancel after current image','partial failure and undo','failed close and retry','save failure blocks import (PR #1 omission)','raw IPC and seven image formats','thumbnail failure preserves imported file','HTTP image import, oversize rejection and 404 aggregation'],formats};
