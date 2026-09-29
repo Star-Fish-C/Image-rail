@@ -1,0 +1,35 @@
+const assert = require('node:assert/strict');
+module.exports = async page => {
+  await page.emulateMedia({reducedMotion:'reduce'});
+  const result = await page.evaluate(async () => {
+    const original = cloneProject(), path = state.projectPath;
+    const source = original.tracks[0];
+    const project = {...original, tracks: Array.from({length:12},(_,i)=>({...source,id:`nav-${i}`,name:`轨道 ${i+1}`,collapsed:false,images:source.images.map((image,j)=>({...image,id:`nav-image-${i}-${j}`}))}))};
+    setProject(path,project);
+    await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+    const labels=[...elements.trackIndex.children].map(button=>button.textContent);
+    elements.trackIndex.children[8].click();
+    await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+    const board=elements.railBoard.getBoundingClientRect();
+    const target=elements.tracks.children[8].getBoundingClientRect();
+    const reached=Math.abs(target.top-board.top)<2;
+    state.project.tracks[8].collapsed=true;render();
+    elements.trackIndex.children[8].click();
+    const remainsCollapsed=state.project.tracks[8].collapsed;
+    state.project.tracks.reverse();render();
+    const reordered=elements.trackIndex.firstElementChild.dataset.trackId==='nav-11';
+    state.project.tracks.pop();render();
+    const deleted=elements.trackIndex.children.length===11;
+    state.importBatch={};updateImportControls();
+    elements.trackIndex.children[0].click();
+    const availableDuringImport=!elements.trackIndex.firstElementChild.disabled;
+    state.importBatch=null;
+    setProject(path,{...original,tracks:[]});
+    const empty=elements.trackIndex.hidden;
+    setProject(path,original);
+    return {labels,reached,remainsCollapsed,reordered,deleted,availableDuringImport,empty,width:getComputedStyle(elements.railBoard,'::-webkit-scrollbar').width};
+  });
+  assert.deepEqual(result.labels,['01','02','03','04','05','06','07','08','09','10','11','12']);
+  for(const key of ['reached','remainsCollapsed','reordered','deleted','availableDuringImport','empty']) assert.equal(result[key],true,key);
+  assert.equal(result.width,'12px');
+};
