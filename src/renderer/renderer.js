@@ -47,6 +47,7 @@ const state = {
 };
 
 const elements = {
+  trackIndex: document.querySelector('#trackIndex'),
   organizeTracksButton: document.querySelector('#organizeTracksButton'),
   toggleInfoButton: document.querySelector('#toggleInfoButton'),
   compareFileNameText: document.querySelector('#compareFileNameText'),
@@ -714,6 +715,7 @@ function render() {
   updateCompareModeButtons();
   updateCompareZoomButtons();
   elements.emptyState.hidden = hasProject && state.project.tracks.length > 0;
+  renderTrackIndex();
 
   if (!hasProject) {
     elements.tracks.replaceChildren();
@@ -737,12 +739,57 @@ function render() {
 }
 
 function updateBoardNavigationButtons() {
+  scheduleTrackIndexUpdate();
   const board = elements.railBoard;
   if (!board) return;
   const hasProject = Boolean(state.projectPath && state.project);
   const maxScrollTop = Math.max(0, board.scrollHeight - board.clientHeight);
   elements.scrollBoardTopButton.disabled = !hasProject || board.scrollTop <= 1;
   elements.scrollBoardBottomButton.disabled = !hasProject || board.scrollTop >= maxScrollTop - 1;
+}
+
+function renderTrackIndex() {
+  const tracks = state.project?.tracks || [];
+  const nav = elements.trackIndex;
+  nav.hidden = tracks.length === 0;
+  nav.closest('.workspace').classList.toggle('has-track-index', tracks.length > 0);
+  const existing = new Map([...nav.children].map(button => [button.dataset.trackId, button]));
+  const ids = new Set(tracks.map(track => track.id));
+  existing.forEach((button, id) => { if (!ids.has(id)) button.remove(); });
+  tracks.forEach((track, index) => {
+    const button = existing.get(track.id) || document.createElement('button');
+    button.type = 'button';
+    button.dataset.trackId = track.id;
+    button.textContent = String(index + 1).padStart(2, '0');
+    button.title = track.name;
+    button.setAttribute('aria-label', `跳转到第 ${index + 1} 条轨道：${track.name}`);
+    if (nav.children[index] !== button) nav.insertBefore(button, nav.children[index] || null);
+  });
+  scheduleTrackIndexUpdate();
+}
+
+let trackIndexFrame = 0;
+function scheduleTrackIndexUpdate() {
+  if (trackIndexFrame) return;
+  trackIndexFrame = requestAnimationFrame(() => {
+    trackIndexFrame = 0;
+    const board = elements.railBoard;
+    const rect = board.getBoundingClientRect();
+    let track = document.elementFromPoint(rect.left + 20, rect.top + 8)?.closest('.track');
+    if (board.scrollTop > 0 && board.scrollTop + board.clientHeight >= board.scrollHeight - 1) track = elements.tracks.lastElementChild;
+    const id = track?.dataset.trackId;
+    for (const button of elements.trackIndex.children) {
+      if (button.dataset.trackId === id) button.setAttribute('aria-current', 'true');
+      else button.removeAttribute('aria-current');
+    }
+  });
+}
+
+function jumpToTrack(trackId) {
+  const track = [...elements.tracks.children].find(element => element.dataset.trackId === trackId);
+  if (!track) return;
+  closeTrackMenu();
+  track.scrollIntoView({behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start', inline: 'nearest'});
 }
 
 function imageCardRenderKey(trackId, image) {
@@ -2640,6 +2687,19 @@ elements.scrollBoardBottomButton.addEventListener('click', () => {
   elements.railBoard.scrollTo({ top: elements.railBoard.scrollHeight, behavior: 'smooth' });
 });
 elements.railBoard.addEventListener('scroll', updateBoardNavigationButtons);
+elements.trackIndex.addEventListener('click', event => {
+  const button = event.target.closest('button[data-track-id]');
+  if (button) jumpToTrack(button.dataset.trackId);
+});
+elements.trackIndex.addEventListener('wheel', event => {
+  if (event.ctrlKey || !event.deltaY) return;
+  event.preventDefault();
+  const unit = event.deltaMode === 1 ? 20 : event.deltaMode === 2 ? elements.railBoard.clientHeight : 1;
+  const delta = event.deltaY * unit;
+  elements.railBoard.scrollTop += delta;
+  // Keep a long list of numbered shortcuts scrollable as well.
+  elements.trackIndex.scrollTop += delta;
+}, { passive: false });
 window.addEventListener('resize', updateBoardNavigationButtons);
 elements.undoButton.addEventListener('click', undoLastAction);
 elements.compareViewButton.addEventListener('click', () => {

@@ -31,8 +31,20 @@ button:hover:not(:disabled) { box-shadow: none; transform: none; }
 .toolbar-divider { height: 20px; width: 1px; background: var(--line); }
 .toolbar-caption { font-size: 12px; color: var(--muted); }
 .toolbar-spacer { flex: 1; }
-.workspace { grid-template-columns: minmax(0, 1fr) 5px var(--compare-panel-width); }
+.workspace { grid-template-columns: 0 minmax(0, 1fr) 5px var(--compare-panel-width); }
+.workspace.has-track-index { grid-template-columns: 44px minmax(0, 1fr) 5px var(--compare-panel-width); }
+.rail-board { grid-column: 2; }
+.compare-resizer { grid-column: 3; }
+.compare-panel { grid-column: 4; }
+.track-index { grid-column: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 8px 0; border-right: 1px solid var(--line); background: #f4f4f8; scrollbar-width: thin; }
+.track-index[hidden] { display: none; }
+.track-index button { display: block; width: 100%; min-height: 36px; padding: 0 2px; border: 0; border-left: 2px solid transparent; border-radius: 0; background: transparent; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.track-index button:hover, .track-index button[aria-current="true"] { background: var(--accent-soft); color: var(--accent-strong); }
+.track-index button[aria-current="true"] { border-left-color: var(--accent); }
+.track-index button:focus-visible { outline-offset: -2px; }
 .rail-board { padding: 0; border: 0; border-radius: 0; background: var(--bg); box-shadow: none; backdrop-filter: none; overflow-x: hidden; }
+.rail-board { scrollbar-width: auto; scrollbar-color: auto; }
+.rail-board::-webkit-scrollbar { width: 12px; }
 .tracks { min-width: 0; gap: 0; }
 .track { display: block; min-height: 0; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; box-shadow: none; backdrop-filter: none; animation: none; contain-intrinsic-size: auto 268px; }
 .track-label, .track.collapsed .track-label { display: flex; flex-direction: row; justify-content: flex-start; align-items: center; min-height: 52px; padding: 10px 16px; gap: 10px; border: 0; background: transparent; }
